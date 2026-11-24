@@ -89,6 +89,24 @@ class HeaderZOrderTest(unittest.TestCase):
         self.assertIn('setSelectable_(False)', text,
                       'a selectable title turns a near-miss click into a text selection')
 
+    def test_accessibility_palette_skips_all_header_icons(self):
+        tree = ast.parse(SOURCE)
+        controller = next(n for n in tree.body
+                          if isinstance(n, ast.ClassDef) and n.name == 'HudController')
+        fn = next(n for n in controller.body
+                  if isinstance(n, ast.FunctionDef) and n.name == '_apply_accessibility_palette')
+        body = ast.unparse(fn)
+        for name in ('self.settings_button', 'self.calibration_button', 'self.ignore_button'):
+            self.assertIn(name, body)
+
+    def test_settings_model_deleted_reenables_delete_button(self):
+        tree = ast.parse((ROOT / 'src' / 'settings.py').read_text())
+        controller = next(n for n in tree.body
+                          if isinstance(n, ast.ClassDef) and n.name == 'SettingsController')
+        fn = next(n for n in controller.body
+                  if isinstance(n, ast.FunctionDef) and n.name == 'modelDeleted_')
+        self.assertIn('self.offline_delete_btn.setEnabled_(True)', ast.unparse(fn))
+
 
 if __name__ == '__main__':
     unittest.main()

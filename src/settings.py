@@ -446,6 +446,7 @@ class SettingsController(NSObject):
             "modelDeleted:", error, False)
 
     def modelDeleted_(self, error):
+        self.offline_delete_btn.setEnabled_(True)
         self.refresh_offline_section()
         if error:
             self.set_status(f"删除失败：{error[:80]}", "error")

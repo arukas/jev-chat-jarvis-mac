@@ -920,8 +920,8 @@ class HudController(NSObject):
             if border is not None:
                 layer.setBorderColor_(border.CGColor())
         for button in self._appearance_buttons:
-            if button is self.settings_button or button is self.calibration_button:
-                continue  # the gear stays an unboxed icon
+            if button in (self.settings_button, self.calibration_button, self.ignore_button):
+                continue  # header icons stay unboxed
             button.layer().setBackgroundColor_(adapted(PALETTE["row"]).CGColor())
             button.layer().setBorderColor_(adapted(PALETTE["edge"]).CGColor())
         self.panel.contentView().setNeedsDisplay_(True)
