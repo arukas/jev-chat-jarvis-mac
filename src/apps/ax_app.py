@@ -456,8 +456,8 @@ def _utf16_chunks(text: str, size: int = 20) -> list[str]:
     i = 0
     while i < total:
         j = min(i + size, total)
-        if j < total and (units[2 * j - 2] & 0xFC) == 0xD8:
-            j -= 1                                # 边界落在代理对中间，高位代理归下一段
+        if j < total and (units[2 * j - 1] & 0xFC) == 0xD8:
+            j -= 1                                # 边界落在代理对中间（UTF-16LE 高字节在奇数位），高位代理归下一段
         out.append(units[2 * i:2 * j].decode("utf-16-le"))
         i = j
     return out

@@ -535,6 +535,16 @@ class TypeTextTests(unittest.TestCase):
         for chunk in self.typed:
             self.assertLessEqual(len(chunk.encode('utf-16-le')) // 2, 20)
 
+    def test_emoji_crossing_odd_utf16_boundary_does_not_split_surrogate(self):
+        # 19 个 BMP 字符 + emoji（UTF-16LE 高代理 0xD83D 字节序为 3D D8），第 20 单元刚好落在代理对中间
+        text = 'a' * 19 + '😀' + 'b' * 5
+        chunks = ax_app._utf16_chunks(text, 20)
+        self.assertEqual(''.join(chunks), text)
+        self.assertEqual(chunks[0], 'a' * 19)
+        self.assertEqual(chunks[1], '😀' + 'b' * 5)
+        for chunk in chunks:
+            self.assertLessEqual(len(chunk.encode('utf-16-le')) // 2, 20)
+
 
 class ProbeScriptTests(unittest.TestCase):
     """probe/ax_probe.py 的两处独立缺陷：walk 计数器可变默认值、--fill 缺参数。"""
