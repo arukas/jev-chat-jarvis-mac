@@ -1884,9 +1884,7 @@ class HudController(NSObject):
             self._input_target = None
             editor = getattr(self, "_input_calibration", None)
             if editor is not None and self._input_calibration_wid == res['window']['wid']:
-                from visual_fill import chat_signature
                 rect = editor.screen_rect(res['window'])
-                signature_rect = self._calibration.screen_rect(res['window'])
                 # 校准模式同样优先 AX 定位：定位到就走 AX 写入（快、不覆盖剪贴板），
                 # 定位不到才回退校准框 + 复制兜底。节流期内沿用上次结果，避免 box 抖动；
                 # AX 不可用是稳态，失败后 3s 才重试，成功后 1s 刷新（与下方 AX 路径同频）。
@@ -1901,8 +1899,7 @@ class HudController(NSObject):
                         self._calib_ax_next = now_calib + 3.0
                 ax_box, ax_rect = getattr(self, "_calib_ax_target", None) or (None, None)
                 self._input_target = dict(box=ax_box,rect=ax_rect,window=dict(res['window']),
-                    visual_rect=rect,manual_region=editor,signature_rect=signature_rect,
-                    chat_signature=chat_signature(res['window'],signature_rect),
+                    visual_rect=rect,manual_region=editor,
                     app=app.key,   # 填入前复核：手动校准目标同样必须带归属标记（#105）
                     reason="手动校准输入区" if ax_box is None else "手动校准输入区 · AX 可写")
             self._input_window = dict(res["window"])
@@ -1923,14 +1920,9 @@ class HudController(NSObject):
             }
             target["app"] = app.key   # 填入前复核：目标必须属于当前 App
             if target["box"] is None and app.needs_screen_capture:
-                # 视觉后备要截图/OCR，只有走屏幕采集的 App 才允许进入；
-                # 文本接口路径绝不截图——box 为 None 就让它保持 None（填入按钮报原因）。
-                from input_region import locate_visual_input
-                target["visual_rect"] = (res.get("input_rect")
-                                         or locate_visual_input(res["window"]))
-                if target["visual_rect"]:
-                    from visual_fill import chat_signature
-                    target["chat_signature"] = chat_signature(res["window"], target["visual_rect"])
+                # 复用本帧已算出的 input_rect，不再二次截屏（#139 停用 visual_fill 后，
+                # chat_signature 已无任何消费者，visual_rect 仅作复制兜底触发条件与检测框绘制）。
+                target["visual_rect"] = res.get("input_rect")
             if capture_foreground_epoch != self._foreground_epoch:
                 self._next_read_ts = time.time() + FAST_TICK
                 return

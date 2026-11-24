@@ -156,18 +156,30 @@ class HudReplyTests(unittest.TestCase):
         self.assertIsNone(self.h._input_target['box'])
         self.assertEqual(self.h._reply_key[:3], ('wechat', 'chat', '下午开会'))
 
-    def test_foreground_change_during_input_signature_discards_read(self):
+    def test_foreground_change_during_input_locate_discards_read(self):
         def switch_foreground(*args):
             self.h._set_foreground_state(None)
-            return 'stale-signature'
+            return {'box': None}
 
-        with patch.object(HUD['fill'], 'locate_input', return_value={'box': None}), \
-             patch('input_region.locate_visual_input', return_value=(1, 2, 3, 4)), \
-             patch('visual_fill.chat_signature', side_effect=switch_foreground):
+        with patch.object(HUD['FAKE_APP'], 'locate_input', side_effect=switch_foreground), \
+             patch('input_region.locate_visual_input') as lvi, \
+             patch('visual_fill.chat_signature') as sig:
             self.incoming()
+            lvi.assert_not_called()
+            sig.assert_not_called()
         self.assertIsNone(self.h._input_target)
         self.assertIsNone(self.h._reply_key)
         self.assertIsNone(self.h._pregen_req)
+
+    def test_visual_fallback_reuses_frame_input_rect_without_extra_capture(self):
+        with patch.object(HUD['FAKE_APP'], 'locate_input', return_value={'box': None}), \
+             patch('input_region.locate_visual_input') as lvi, \
+             patch('visual_fill.chat_signature') as sig:
+            self.incoming()
+            lvi.assert_not_called()
+            sig.assert_not_called()
+        self.assertIsNotNone(self.h._input_target)
+        self.assertNotIn('chat_signature', self.h._input_target)
 
     def test_switch_short_titles_with_same_message_invalidates_old_reply(self):
         titles = [extract_chat_title([block(name, .40, .94, .10, .025)])
