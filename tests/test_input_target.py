@@ -28,6 +28,27 @@ class InputTargetTests(unittest.TestCase):
 
     def test_same_target_appends_and_verifies(self):
         target = {'window': {}, 'box': 'box', 'rect': (0, 400, 600, 100)}
-        with patch.object(fill, 'has_accessibility', return_value=True), patch.object(fill, '_wechat_app', return_value=Mock()), patch.object(fill, 'locate_input', return_value=target), patch.object(fill, '_ax_value', side_effect=['draft', 'drafttest']), patch.object(fill, '_ax_set_value', return_value=True) as write, patch.object(fill, '_LAST_FILL', None):
+        with patch.object(fill, 'has_accessibility', return_value=True), patch.object(fill, '_wechat_app', return_value=Mock()), patch.object(fill, 'locate_input', return_value=target), patch.object(fill, '_ax_value', side_effect=['draft', 'drafttest']), patch.object(fill, '_ax_set_value', return_value=True) as write, patch.object(fill, '_LAST_FILL', None), patch.object(fill, '_LAST_FALLBACK', 'stale'):
             self.assertEqual(fill.fill_text('test', target=target), (True, '已填入'))
             write.assert_called_once_with('box', 'drafttest')
+            self.assertIsNone(fill.fallback_diagnosis())
+
+    def test_fallback_diagnosis_uses_ax_app_element_for_collapse_code(self):
+        target = {'window': {}, 'box': None, 'visual_rect': (0, 400, 600, 100)}
+        fake_app = Mock()
+        fake_app.processIdentifier.return_value = 4321
+        fake_ax_el = object()
+        with patch.object(fill, 'has_accessibility', return_value=True), \
+             patch.object(fill, '_wechat_app', return_value=fake_app), \
+             patch.object(fill, '_find_input_box', return_value=None), \
+             patch.object(fill.ApplicationServices, 'AXUIElementCreateApplication', return_value=fake_ax_el) as create_ax, \
+             patch.object(fill.ApplicationServices, 'AXUIElementCopyAttributeValue', return_value=(-25211, None)) as copy_attr, \
+             patch.object(fill, '_copy_to_clipboard', return_value=True):
+            ok, reason = fill.fill_text('你好', target=target)
+        self.assertEqual((ok, reason), (True, fill.REASON_COPIED))
+        create_ax.assert_called_once_with(4321)
+        copy_attr.assert_called_once_with(fake_ax_el, fill.ApplicationServices.kAXWindowsAttribute, None)
+        self.assertIn('塌树特征', fill.fallback_diagnosis())
+
+    def test_wechat_names_include_weixin_alias(self):
+        self.assertIn('Weixin', fill.WECHAT_NAMES)

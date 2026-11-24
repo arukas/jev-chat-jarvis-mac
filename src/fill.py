@@ -42,6 +42,7 @@ Standalone use (handy for granting the permission before the HUD ever needs it):
 
 from __future__ import annotations
 
+from collections import deque
 import threading
 import time
 
@@ -49,7 +50,7 @@ import AppKit
 import ApplicationServices
 
 WECHAT_BUNDLE_ID = "com.tencent.xinWeChat"
-WECHAT_NAMES = ("微信", "WeChat")
+WECHAT_NAMES = ("微信", "WeChat", "Weixin")
 
 # WeChat owns two windows: a small untitled one and the chat window. The input box lives in
 # the latter, so it is searched first and the untitled window is only a fallback.
@@ -215,15 +216,15 @@ def _find_input_box(pid: int, window_rect=None):
     ordered = sorted(
         windows,
         key=lambda w: _ax_attr(w, ApplicationServices.kAXTitleAttribute)
-        != CHAT_WINDOW_TITLE)
+        not in WECHAT_NAMES)
 
     best, best_area = None, 0.0
     for window in ordered:
         if window_rect is not None and not _same_rect(_ax_rect(window), window_rect):
             continue
-        queue, seen = [window], 0
+        queue, seen = deque([window]), 0
         while queue and seen < MAX_NODES:
-            el = queue.pop(0)
+            el = queue.popleft()
             seen += 1
             if _ax_attr(el, ApplicationServices.kAXRoleAttribute) == INPUT_ROLE:
                 size = _ax_size(el)
@@ -305,7 +306,7 @@ def fill_text(text: str, target=None) -> tuple[bool, str]:
     lands at the caret, which is the end of the box once the user has been typing. Success
     is never reported without reading the text back.
     """
-    global _LAST_FILL
+    global _LAST_FILL, _LAST_FALLBACK
     text = (text or "").strip()
     if not text:
         return False, REASON_EMPTY
@@ -313,6 +314,7 @@ def fill_text(text: str, target=None) -> tuple[bool, str]:
         # a fill is still running; a second write now would double the text
         return False, REASON_BUSY
     try:
+        _LAST_FALLBACK = None
         if not has_accessibility():
             return False, REASON_NO_ACCESS
 
@@ -325,7 +327,6 @@ def fill_text(text: str, target=None) -> tuple[bool, str]:
             # fallback: the user's own keypress is a real event, while synthesized
             # click+keystrokes (visual_fill) read as automation to WeChat's risk
             # control — force-logout, #139.
-            global _LAST_FALLBACK
             # Re-probe once for the log: distinguishes the three candidate causes —
             # a control findable NOW means perception-time staleness (timing/tree
             # recovery); a window-read error means the known whole-tree collapse
@@ -336,8 +337,10 @@ def fill_text(text: str, target=None) -> tuple[bool, str]:
                 _LAST_FALLBACK = "兜底触发 · 此刻重查 AX 输入框可用——感知阶段定位已过期（时序或塌树后恢复）"
             else:
                 try:
+                    app_el = ApplicationServices.AXUIElementCreateApplication(
+                        app.processIdentifier())
                     err, _ = ApplicationServices.AXUIElementCopyAttributeValue(
-                        app, ApplicationServices.kAXWindowsAttribute, None)
+                        app_el, ApplicationServices.kAXWindowsAttribute, None)
                 except Exception:
                     err = -1
                 why = "塌树特征" if err == -25211 else f"AX 窗口读取 err={err}"
