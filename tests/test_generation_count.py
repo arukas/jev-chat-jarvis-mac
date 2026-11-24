@@ -56,6 +56,38 @@ class CandidateCountGenerationTests(unittest.TestCase):
         self.assertIn("只输出 3 行", prompt)
         self.assertIn("前一条稳妥", prompt)
 
+    def test_thinking_only_error_preserves_model_hint(self):
+        generator = generate.Generator()
+        hint = generate.THINKING_ONLY_HINT.format(model="deepseek-reasoner", alt="deepseek-chat")
+        with patch.object(generator, "_call", side_effect=generate.ThinkingOnlyError(hint)):
+            texts, error = generator._one_tone("当前消息", "闲聊", "高情商话术")
+        self.assertEqual(texts, [])
+        self.assertEqual(error, hint)
+        self.assertIn("deepseek-reasoner", error)
+        self.assertIn("deepseek-chat", error)
+
+    def test_hud_finish_generate_surfaces_detailed_generation_error(self):
+        import threading
+        from types import SimpleNamespace
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from support_hud import Harness, HUD
+
+        h = Harness()
+        pushed = []
+        h._context_lock = threading.RLock()
+        h.conversations = None
+        h._app = HUD["FAKE_APP"]
+        h._reply_key = ("wechat", "chat", "hi", None, ())
+        h._paused = False
+        h._reply_epoch = 1
+        h._reply_worker = threading.local()
+        h.performSelectorOnMainThread_withObject_waitUntilDone_ = lambda s, p, w: pushed.append((s, p))
+
+        hint = generate.THINKING_ONLY_HINT.format(model="deepseek-r1", alt="deepseek-chat")
+        h._finish_generate({"groups": [], "error": hint, "elapsed_s": 0.2},
+                           SimpleNamespace(text="hi"), 0.0, None)
+        self.assertTrue(any(p[1] == "applyError:" and hint in p[2] for _s, p in pushed))
+
 
 if __name__ == "__main__":
     unittest.main()

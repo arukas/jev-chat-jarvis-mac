@@ -563,7 +563,7 @@ class Generator:
         try:
             raw = self._call(prompt, on_delta if on_line is not None else None)
         except ThinkingOnlyError as e:
-            return [], "模型仅返回思考内容，请关闭思考模式或更换模型"
+            return [], str(e) or "模型仅返回思考内容，请关闭思考模式或更换模型"
         except urllib.error.HTTPError as e:
             return [], f"HTTP {e.code}：请检查模型服务设置"
         except Exception as e:
@@ -621,7 +621,7 @@ class Generator:
                 try:
                     texts, err = futures[i].result()
                 except Exception as e:      # defensive: _one_tone swallows its own errors
-                    texts, err = [], f"{type(e).__name__}: {e}"
+                    texts, err = [], type(e).__name__
                 groups.append({"slot": i, "tone": tone, "texts": texts, "error": err})
 
         _base, _key, model = self._creds_or_load()

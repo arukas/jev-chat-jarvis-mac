@@ -1381,7 +1381,7 @@ class HudController(NSObject):
                  + (f" · 失败: {'; '.join(failed)}" if failed else ""))
             payload = self._payload_from_gen(gen)
             if payload is None:
-                err = "服务未返回可用候选，请检查模型设置"
+                err = (gen.get("error") or "").strip() or "服务未返回可用候选，请检查模型设置"
                 _log(f"换话术无可用候选: {err}")
                 self._push("applyError:", f"候选生成失败: {err}")
                 return
@@ -1406,7 +1406,7 @@ class HudController(NSObject):
             gen = self.generator.generate(chat_context.model_message(text, context), intent, slot_tones, context)
             payload = self._payload_from_gen(gen)
             if payload is None:
-                err = "服务未返回可用候选，请检查模型设置"
+                err = (gen.get("error") or "").strip() or "服务未返回可用候选，请检查模型设置"
                 _log(f"重新生成无可用候选: {err}")
                 self._push("applyError:", f"重新生成失败: {err}")
                 return
@@ -2440,7 +2440,7 @@ class HudController(NSObject):
         intent = verdict["intent"] if verdict else ""
         payload = self._payload_from_gen(gen)
         if payload is None:
-            err = "服务未返回可用候选，请检查模型设置"
+            err = (gen.get("error") or "").strip() or "服务未返回可用候选，请检查模型设置"
             _log(f"生成无可用候选: {err}")
             self._push("applyError:", f"候选生成失败: {err}")
             return
