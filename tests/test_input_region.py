@@ -42,3 +42,30 @@ class VisualRegionTests(unittest.TestCase):
         self.assertAlmostEqual(rect[0],230/800,delta=.01)
         self.assertAlmostEqual(rect[1],.75,delta=.01)
         self.assertAlmostEqual(rect[3],.25,delta=.02)
+
+    def test_longest_run_handles_gaps_and_ties(self):
+        import numpy as np
+        from input_region import _longest_run
+        # Single edge pixel is not a span
+        row = np.zeros(50, dtype=bool)
+        row[10] = True
+        self.assertEqual(_longest_run(row), (0, 0))
+        # Gaps <= 4 stay merged; gap > 4 splits
+        row = np.zeros(50, dtype=bool)
+        for x in (2, 6, 10, 20, 22, 26, 30):
+            row[x] = True
+        self.assertEqual(_longest_run(row), (25, 35))
+
+    def test_same_frame_vectorized_threshold(self):
+        from perception import _same_frame
+        base = bytes([100] * 100)
+        # 5 bytes differing by >=8 still counts as same (<6)
+        near = bytearray(base)
+        for i in range(5):
+            near[i] = 108
+        self.assertTrue(_same_frame(base, bytes(near)))
+        # 6 bytes differing by >=8 counts as changed
+        near[5] = 92
+        self.assertFalse(_same_frame(base, bytes(near)))
+        # Different lengths never match
+        self.assertFalse(_same_frame(base, base[:-1]))

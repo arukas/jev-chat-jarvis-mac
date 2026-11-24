@@ -253,21 +253,10 @@ def find_wechat_window(previous_wid: int | None = None) -> WindowInfo | None:
     # windows around, and re-picking each tick let the target jump between them.
     # Only keep that choice within the same priority; a newly available main wins.
     if previous_wid is not None and best is not None and best.wid != previous_wid:
-        for w in wins:
-            owner = w.get("kCGWindowOwnerName") or ""
-            if owner not in WECHAT_APP_NAMES:
-                continue
-            if int(w.get("kCGWindowNumber") or 0) != previous_wid:
-                continue
-            title = w.get("kCGWindowName") or ""
-            b = dict(w.get("kCGWindowBounds") or {})
-            pw = float(b.get("Width", 0))
-            ph = float(b.get("Height", 0))
-            if (title and pw >= 500 and ph >= 400
-                    and (title in WECHAT_APP_NAMES) == (best.title in WECHAT_APP_NAMES)):
-                return WindowInfo(wid=previous_wid, pid=int(w.get("kCGWindowOwnerPID") or 0),
-                                  title=title, x=float(b.get("X", 0)), y=float(b.get("Y", 0)),
-                                  w=pw, h=ph)
+        best_is_main = best.title in WECHAT_APP_NAMES
+        for wi in eligibles:
+            if wi.wid == previous_wid and (wi.title in WECHAT_APP_NAMES) == best_is_main:
+                return wi
     return best
 
 
@@ -488,7 +477,14 @@ def _same_frame(a: bytes | None, b: bytes | None) -> bool:
         return False
     if a == b:
         return True
-    return sum(1 for x, y in zip(a, b) if abs(x - y) >= 8) < 6
+    if len(a) != len(b):
+        return False
+    import numpy as np
+    diff = np.abs(
+        np.frombuffer(a, dtype=np.uint8).astype(np.int16)
+        - np.frombuffer(b, dtype=np.uint8).astype(np.int16)
+    )
+    return int(np.count_nonzero(diff >= 8)) < 6
 
 
 # ---------------------------------------------------------------------- extraction
@@ -563,14 +559,6 @@ def _title_ok(title: str) -> bool:
     # keys across chats — so length alone must not reject a title. Shape and known
     # chrome strings above are what separate a name from a misread fragment.
     return bool(re.sub(r"[\W_]+", "", title, flags=re.UNICODE))
-
-
-def _is_noise(b: TextBlock) -> bool:
-    if b.conf < MIN_CONF or len(b.text) < MIN_TEXT_LEN:
-        return True
-    if TIMESTAMP_RE.match(b.text):
-        return True
-    return any(re.search(pat, b.text) for pat in UI_NOISE)
 
 
 def extract_chat_title(blocks: list[TextBlock], window_h: float | None = None) -> str:
@@ -808,11 +796,10 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
               "x": win.x, "y": win.y}
     # Use the same captured pixels for the input boundary and OCR. Never reuse a
     # previous window's boundary after resizing or switching windows.
-    if image is None:
-        with tempfile.TemporaryDirectory() as td:
-            png = Path(td) / "chat.png"
-            if capture_window(win.wid, png):
-                image = _load_png_image(png)
+    with tempfile.TemporaryDirectory() as td:
+        png = Path(td) / "chat.png"
+        if capture_window(win.wid, png):
+            image = _load_png_image(png)
     if calibration is not None:
         if image is None:
             return {"ok": False, "error": "capture failed", "messages": []}
