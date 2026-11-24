@@ -404,7 +404,7 @@ def capture_image(wid: int, nominal: bool = True):
         return None
 
 
-def ocr_image(image, languages=("zh-Hans",), chat_only: bool = True, input_top=None, region=None) -> list[TextBlock]:
+def ocr_image(image, languages=("zh-Hans", "zh-Hant", "en-US"), chat_only: bool = True, input_top=None, region=None) -> list[TextBlock]:
     """Same tuned Vision request, fed a CGImage directly — no PNG encode, no temp file."""
     import Vision
     handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(image, None)
@@ -502,34 +502,114 @@ def _is_noise(b: TextBlock) -> bool:
     return any(re.search(pat, b.text) for pat in UI_NOISE)
 
 
-def extract_chat_title(blocks: list[TextBlock]) -> str:
+# An OCR string that cannot be a conversation name. These used to become keys of their
+# own, so one real chat was stored under six different buckets ("Jamoluns", "Jamoljuns",
+# "JMouuns", "JaMoluns", …) and the model only ever saw a sixth of its own history.
+# A rejected title returns "" and the frame is simply not persisted.
+_TITLE_REJECT = (
+    r"使用\s*[「『]",         # macOS "open with" banner drifting into the header band
+    r"\.app",                 # same banner, or a window chrome fragment
+    r"^\W*\d+\s*[Gg]$",       # status-bar cellular readout
+    r"Wi-?Fi|蓝牙|100%",
+    r"^\d{1,2}:\d{2}$",      # a clock, not a chat
+    # A divider WeChat draws INSIDE the chat, never a conversation name.
+    # All of these were seen as real keys on this machine. Anchored to the whole string
+    # so a chat actually named "11月24日聚会" still passes.
+    r"^(?:星期|周)[一二三四五六日天]\s*[\d:：]*$",
+    r"^(?:昨天|今天|前天|明天|凌晨|早上|上午|中午|下午|晚上|今晚)\s*[\d:：]*$",
+    r"^\d{1,2}\s*月\s*\d{1,2}\s*日\s*[\d:：]*$",
+    r"^\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日\s*[\d:：]*$",
+    r"^[\W_]{0,2}\S{1,2}\s*[、,，:：·<>|]\s*\S{1,2}[\W_]{0,2}$",
+    r"^[\W_]{0,4}[45]G[\s\d]*$",     # "：！！4G 83" — the status strip, not a chat
+)
+_EDGE_CHARS = frozenset(" \t<>»›«〈《[]()（）-—·•.,，。、:：;；!！?？'\"“”‘’「」』*_#|")
+# A closing mark may only be dropped when nothing inside the name opened it.
+_CLOSERS = {")": "(", "）": "（", "]": "[", "】": "【", "》": "《", "」": "「",
+            "』": "『", "”": "“", "’": "‘"}
+
+
+def _strip_edges(text: str) -> str:
+    """Drop control glyphs stuck to a title, never a bracket that closes the name."""
+    text = text.strip()
+    while text and text[0] in _EDGE_CHARS:
+        lead = text[0]
+        if lead in _CLOSERS and text.count(_CLOSERS[lead]) >= text.count(lead):
+            break
+        text = text[1:].strip()
+    while text and text[-1] in _EDGE_CHARS:
+        tail = text[-1]
+        if tail in _CLOSERS and text.count(_CLOSERS[tail]) >= text.count(tail):
+            break
+        text = text[:-1].strip()
+    return text
+
+
+def _clean_title(title: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+    # The app appends a changing member count; it is not part of the conversation key.
+    # Strip it BEFORE edge punctuation, so a bare "(20)" becomes empty rather than "20".
+    title = re.sub(r"\s*[（(]\s*\d+\s*[）)]\s*$", "", title).strip()
+    # A back arrow or separator read as text sticks to the left edge of the title.
+    return _strip_edges(title)
+
+
+def _title_ok(title: str) -> bool:
+    """Whether an OCR string is usable as a conversation key."""
+    if not title:
+        return False
+    if any(re.search(pat, title) for pat in _TITLE_REJECT):
+        return False
+    # A contact can genuinely be one glyph ("王"), and an empty key collides reply
+    # keys across chats — so length alone must not reject a title. Shape and known
+    # chrome strings above are what separate a name from a misread fragment.
+    return bool(re.sub(r"[\W_]+", "", title, flags=re.UNICODE))
+
+
+def _is_noise(b: TextBlock) -> bool:
+    if b.conf < MIN_CONF or len(b.text) < MIN_TEXT_LEN:
+        return True
+    if TIMESTAMP_RE.match(b.text):
+        return True
+    return any(re.search(pat, b.text) for pat in UI_NOISE)
+
+
+def extract_chat_title(blocks: list[TextBlock], window_h: float | None = None) -> str:
     """Read the conversation name from the chat pane's header band.
 
-    Two rows live up there: the title itself and (when a chat is collapsed) a
-    "folded chats" banner. We take the topmost readable band and drop the banner.
+    The title is the largest type in that band — bigger than the member count, the
+    collapsed-chat banner and the window controls. Picking by position grabbed whatever
+    chrome happened to sit highest (a status readout, an "open with" banner, a lone
+    misread glyph); picking by font height is what a person reading the window does.
     """
+    # Measure the header band in POINTS, not as a fraction of the window: the title row
+    # sits ~34pt down and the first date divider ~86pt down, so a 64pt band holds the
+    # title and nothing else on any window size. As a window fraction the band was 64pt
+    # on a 640pt window but 100pt on a 997pt one, which swallowed the divider and split
+    # one chat into eight buckets.
+    band_top = TITLE_BAR_Y_MAX
+    if window_h and window_h > 0:
+        band_top = max(band_top, 1.0 - 64.0 / window_h)
+    # Titles are left-aligned in the chat pane; window controls and the member count
+    # sit to their right, so anything past the pane's midpoint is not the name.
     cands = [b for b in blocks
-             if b.x >= CHAT_PANE_X_MIN and b.y > TITLE_BAR_Y_MAX
-             and not _is_noise(b)]
-    # No length cap on purpose: an empty title collides reply keys across chats
-    # (key = (chat_title, text)), which is worse than the occasional single-glyph
-    # OCR smudge promoted to a title.
-    # Chat titles are left-aligned; centered headers would need layout detection.
-    # A real contact name can be one character, so length cannot tell title from controls.
-    starts = [b for b in cands if b.x < (CHAT_PANE_X_MIN + 1) / 2]
-    if not starts:
+             if CHAT_PANE_X_MIN <= b.x < (CHAT_PANE_X_MIN + 1) / 2
+             and b.y > band_top and not _is_noise(b)]
+    if not cands:
         return ""
-    top_y = max(b.y for b in starts)
-    band = sorted((b for b in cands if abs(top_y - b.y) < 0.03), key=lambda b: b.x)
+    tallest = max(b.h for b in cands)
+    main = [b for b in cands if b.h >= tallest * 0.85]
+    # Highest row first, leftmost within the row: the back arrow sits left of the title.
+    anchor = max(main, key=lambda b: (b.y, -b.x))
+    band = sorted((b for b in main if abs(anchor.y - b.y) < max(0.02, anchor.h * 1.2)),
+                  key=lambda b: b.x)
     keep = [band[0]]
     for b in band[1:]:
         # Join adjacent OCR fragments, including a short suffix; stop before controls.
         if b.x - keep[-1].x_right > 1.5 * max(b.h, keep[-1].h):
             break
         keep.append(b)
-    title = " ".join(b.text for b in keep).strip()
-    # The app appends a changing member count; it is not part of the conversation key.
-    return re.sub(r"\s*[（(]\s*\d+\s*[）)]\s*$", "", title).strip()
+    title = _clean_title(" ".join(b.text for b in keep))
+    return title if _title_ok(title) else ""
 
 
 def message_side(x: float, width: float) -> str:
@@ -779,7 +859,7 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
     blocks = ocr_image(image, input_top=input_top)
     t_ocr = time.perf_counter()
 
-    chat_title = extract_chat_title(blocks)
+    chat_title = extract_chat_title(blocks, window.get("h"))
     t_extract = time.perf_counter()
     msgs = (extract_messages(blocks, max_messages=max_messages, input_top=input_top, image=image,
                              chat_left=outline[0])

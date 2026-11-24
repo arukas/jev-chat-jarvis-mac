@@ -133,6 +133,29 @@ class RecognitionTests(unittest.TestCase):
                     self.read(*quoted_scene(style), manual)
                     self.assertEqual(self.h._reply_epoch, epoch)
 
+    def test_ignored_chat_is_not_stored_or_sent_to_the_model(self):
+        # A push-notification chat (公众号/银行/服务号) never needs a reply; the switch
+        # must stop the history write, the judge call and the generation together.
+        self.h.conversations.set_muted('测试群', True)
+        self.assertTrue(self.h.conversations.is_muted('测试群'))
+        boxes, blocks = quoted_scene()
+        self.read(boxes, blocks, manual=False)
+        self.assertEqual(self.h.conversations.history('测试群'), [])
+        self.assertIsNone(self.h._prejudge_req)
+        self.assertIsNone(self.h._pregen_req)
+        # Turning it back on must not reuse the empty snapshot taken while ignored.
+        self.h.conversations.set_muted('测试群', False)
+        self.read(boxes, blocks, manual=False)
+        self.assertEqual(len(self.h.conversations.history('测试群')), 1)
+        self.assertIsNotNone(self.h._prejudge_req)
+
+    def test_ignored_flag_survives_history_writes_and_clearing(self):
+        self.h.conversations.set_muted('测试群', True)
+        self.read(*quoted_scene(), manual=False)
+        self.h.clear_history('测试群')
+        self.assertTrue(self.h.conversations.is_muted('测试群'))
+        self.assertEqual(self.h.conversations.muted_titles(), ['测试群'])
+
     def test_mixed_content_generates_but_quote_only_and_unknown_do_not(self):
         for manual in (False, True):
             with self.subTest(manual=manual):
@@ -272,7 +295,7 @@ class RecognitionTests(unittest.TestCase):
 
     def test_quote_record_evicts_with_parent_at_history_limit(self):
         for manual in (False, True):
-            prior = [['记录'+str(i), 'them', ''] for i in range(99)]
+            prior = [['记录'+str(i), 'them', ''] for i in range(199)]
             prior.append(['可以', 'them', '乙', '明天能来开会吗', '甲', ''])
             self.h.conversations.path.write_text(json.dumps({'测试群': {'messages': prior}}))
             self.h.conversations.reload()
@@ -282,11 +305,11 @@ class RecognitionTests(unittest.TestCase):
                        block('丙：后天交付',252,354,120,12)]
             self.read(boxes, blocks, manual)
             restored = chat_context.Conversations(self.h.conversations.path).history('测试群')
-            self.assertEqual(len(restored), 100)
+            self.assertEqual(len(restored), 200)
             self.assertEqual(restored[0][0], '记录1')
             self.assertEqual(restored[-1][0], '收到')
-            self.assertIn('引用背景（丙，不是新发言）：后天交付', chat_context.context_text(restored,99,limit=1))
-            self.assertNotIn('明天能来开会吗', chat_context.context_text(restored,99,limit=1))
+            self.assertIn('引用背景（丙，不是新发言）：后天交付', chat_context.context_text(restored,199,limit=1))
+            self.assertNotIn('明天能来开会吗', chat_context.context_text(restored,199,limit=1))
 
     def test_wide_sidebar_rounded_short_bubbles_and_ui_words_in_body(self):
         ctx=Q.CGBitmapContextCreate(None,600,600,8,2400,Q.CGColorSpaceCreateDeviceRGB(),Q.kCGImageAlphaPremultipliedLast)

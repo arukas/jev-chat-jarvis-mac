@@ -32,10 +32,15 @@ def hud_harness():
              '_prejudge_loop', '_pregen_loop', '_analyze', '_run_generation', 'reload_conversations',
              '_context_changed', 'save_background', 'configure_context', 'clear_history',
              '_regen_work', '_regenerate_work', 'regenerateReply_', '_rank_payload', '_payload_from_gen',
-             'fillCandidate_', '_warm', '_warm_apps', 'toggleAlwaysOnTop_', 'tick_'}
+             'fillCandidate_', '_warm', '_warm_apps', 'toggleAlwaysOnTop_', 'tick_',
+             '_chat_is_ignored', 'applyChatState_'}
     methods = [n for n in source.body if isinstance(n, ast.FunctionDef) and n.name in names]
     for method in methods:
         method.decorator_list = []
+    # The switch has no NSButton here; record what the tick wanted to show instead.
+    methods.append(ast.parse(
+        "def _show_ignore_button(self, title, ignored):\n"
+        "    self.ignore_state = (title, bool(ignored))\n").body[0])
     klass = ast.ClassDef(name='Harness', bases=[], keywords=[], body=methods, decorator_list=[])
     from apps.registry import UNKNOWN
     locate = Mock(return_value={'box': None, 'rect': None, 'reason': 'test'})

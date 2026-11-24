@@ -349,14 +349,14 @@ class HudReplyTests(unittest.TestCase):
                 self.read([block(f'记录{i:03}', .40, .80 - (i-start)*.10, .15)
                            for i in range(start, number+1)])
             restored = chat_context.Conversations(path)
-            self.assertEqual(len(restored.history('chat')), 100)
-            self.assertEqual(restored.history('chat')[0][0], '记录006')
+            self.assertEqual(len(restored.history('chat')), 105)
+            self.assertEqual(restored.history('chat')[0][0], '记录001')
             self.assertEqual(restored.history('chat')[-1][0], '记录105')
             self.assertIn('记录086', self.h._pregen_req[1])
             self.assertNotIn('记录085', self.h._pregen_req[1])
             self.assertNotIn('记录105', self.h._pregen_req[1])
             self.read([block('记录105', .40, .80, .15)])
-            self.assertEqual(len(self.h.conversations.history('chat')), 100)
+            self.assertEqual(len(self.h.conversations.history('chat')), 105)
             self.h.history_enabled = False
             self.read([block('记录105', .40, .80, .15), block('记录106', .40, .60, .15)])
             self.assertNotIn('记录086', self.h._pregen_req[1])
@@ -385,7 +385,7 @@ class HudReplyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.h.configure_context(False, bad)
                 self.assertTrue(self.h.history_enabled)
-            self.assertEqual(len(chat_context.Conversations(path).history('chat')), 100)
+            self.assertEqual(len(chat_context.Conversations(path).history('chat')), 105)
             self.read([block('另一会话', .40, .70, .15)], title='B')
             self.h.save_background('B', '另一背景')
             old = self.h._reply_epoch

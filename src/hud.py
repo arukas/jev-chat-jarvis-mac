@@ -391,6 +391,33 @@ class HudController(NSObject):
         view.addSubview_(self.calibration_button)
         self._fixed.append((self.calibration_button, PANEL_W - 80, 4, 32, 32))
 
+        # A push-notification chat (公众号 / 银行 / 服务号) costs the same read + judge +
+        # generate budget as a real conversation and never needs a reply. One switch per
+        # conversation turns it off without touching global settings.
+        # 38pt wide instead of 32: this slot sits 4pt left of the calibration icon, so the
+        # target can only grow sideways up to that gap. Keep the glyph centred on the same
+        # spot (PANEL_W - 100) so the header still reads as one row.
+        self.ignore_button = self._make_button(PANEL_W - 119, 3, 38, 34,
+                                               "", "toggleIgnoreChat:", 0)
+        ignore_icon = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+            "eye.slash", "忽略此聊天")
+        self.ignore_button.setImage_(
+            ignore_icon.imageWithSymbolConfiguration_(symbol_config))
+        self.ignore_button.setImagePosition_(AppKit.NSImageOnly)
+        self.ignore_button.setImageScaling_(AppKit.NSImageScaleNone)
+        self.ignore_button.setBordered_(False)
+        # The last control added to the panel becomes its first responder, and macOS then
+        # paints a focus capsule over an otherwise flat icon. Keep the header uniform.
+        self.ignore_button.setFocusRingType_(AppKit.NSFocusRingTypeNone)
+        self.ignore_button.setRefusesFirstResponder_(True)
+        self.ignore_button.setContentTintColor_(PALETTE["muted"])
+        self.ignore_button.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+        self.ignore_button.layer().setBorderWidth_(0.0)
+        self.ignore_button.setToolTip_("忽略此聊天（不读、不判断、不生成）")
+        self.ignore_button.setAccessibilityLabel_("忽略此聊天")
+        view.addSubview_(self.ignore_button)
+        self._fixed.append((self.ignore_button, PANEL_W - 119, 3, 38, 34))
+
         # Decorative surfaces are fixed; every string still comes from the existing rows.
         for surface, x, top, w, h in (
             (self._make_surface(12, PALETTE["surface"]), 14, 54, PANEL_W - 28, 62),
@@ -439,7 +466,7 @@ class HudController(NSObject):
             self._detail_views.append(label)
 
         for key, x, top, w, h, size, color, bold in (
-            ("chat", 20, 14, PANEL_W - 112, 20, 15, PALETTE["accent"], True),
+            ("chat", 20, 14, PANEL_W - 140, 20, 15, PALETTE["accent"], True),
             ("status", 20, 36, PANEL_W - 40, 14, 10, PALETTE["muted"], False),
             ("message", 22, 82, PANEL_W - 44, 38, 14, PALETTE["text"], False),
             ("sender", 22, 62, PANEL_W - 112, 14, 10, PALETTE["muted"], False),
@@ -452,6 +479,13 @@ class HudController(NSObject):
             if key in {"message", "actions"}:
                 tf.cell().setWraps_(True)
             self.rows[key] = tf
+            if key in {"chat", "status"}:
+                # These two live in the header row, right next to the icon buttons. A
+                # selectable field turns a near miss into a blue text selection over the
+                # chat name, which reads as the app double-clicking itself; they are pure
+                # readouts, so keep them inert and out of the responder chain.
+                tf.setSelectable_(False)
+                tf.setRefusesFirstResponder_(True)
             if key == "message":
                 tf.cell().setScrollable_(False)
                 tf.cell().setUsesSingleLineMode_(False)
@@ -562,6 +596,15 @@ class HudController(NSObject):
         self.regenerate_button.setToolTip_("沿用当前消息和判断结果，只重新生成候选回答")
         view.addSubview_(self.regenerate_button)
         self._detail_views.append(self.regenerate_button)
+
+        # The header icons must be the last siblings in the content view. They were built
+        # first, and everything after them — the decorative surfaces and, most importantly,
+        # the chat-title and status labels — lands above them. AppKit hands a click to the
+        # topmost view, so a selectable title field spanning PANEL_W-140 swallowed the left
+        # two thirds of the eye switch: only its right sliver toggled, and the rest simply
+        # selected the chat name. A view can hold one z position, so re-adding moves it up.
+        for button in (self.settings_button, self.calibration_button, self.ignore_button):
+            view.addSubview_(button)
 
         self.panel.setContentView_(view)
         self._title_h = self.panel.frame().size.height - PANEL_H   # measured, not assumed
@@ -904,6 +947,12 @@ class HudController(NSObject):
     def _show(self):
         if not self.panel.isVisible():
             self.panel.orderFrontRegardless()
+
+    @objc.python_method
+    def _chat_is_ignored(self, title) -> bool:
+        conversations = self.conversations
+        return bool(title) and conversations is not None \
+            and not conversations.error and conversations.is_muted(title)
 
     @objc.python_method
     def _context_line(self, sender, prev: str) -> str:
@@ -1889,6 +1938,22 @@ class HudController(NSObject):
             self._input_next = now_input + 1.0
         with self._context_lock:
             self.reload_conversations()
+            chat_title = res.get("chat_title") or ""
+            ignored = self._chat_is_ignored(chat_title)
+            # Repaint whenever the chat changes, not only on a fresh frame: a chat with
+            # nothing readable yet never produces one, and the header then kept the previous
+            # chat's switch and status, so a brand-new chat looked already ignored.
+            if chat_title != getattr(self, "_painted_title", None):
+                self._painted_title = chat_title
+                self._push("applyChatState:", (chat_title, ignored))
+            if ignored:
+                # Nothing about an ignored chat is stored or paid for: no history write,
+                # no judge call, no generation.
+                self._observed_messages, self._observed_offset = [], 0
+                self._reply_key = None
+                self._prejudge_req = self._prejudge_result = None
+                self._pregen_req = self._pregen_result = None
+                return
             if capture_context_version != self._context_version:
                 self._fingerprint = None
                 self._last_full = None
@@ -2438,9 +2503,79 @@ class HudController(NSObject):
         self._render("status", _payload or "等待可确认的对方消息…", PALETTE["muted"])
 
     # --- main-thread callbacks (AppKit is not thread safe)
+    def applyChatState_(self, payload):
+        """Keep the header switch on the chat being read, even with no fresh frame.
+
+        A chat that has just been opened often has nothing readable yet, so no frame is
+        produced and the switch kept the previous chat's state. This paints only the
+        switch: the title text still comes from the normal per-frame path.
+        """
+        title, ignored = payload
+        self._chat_title = title
+        self._show_ignore_button(title, bool(ignored))
+
     def applyChat_(self, title):
         self._chat_title = title
         self._render("chat", title, PALETTE["accent"])
+        self._show_ignore_button(title, False)
+        # Leaving an ignored chat: put back the status line the ignore notice replaced,
+        # otherwise the panel keeps saying "已忽略此聊天" for a chat that is read again.
+        if getattr(self, "_ignore_notice", False):
+            self._ignore_notice = False
+            before = getattr(self, "_status_before_ignore", None)
+            self._status_before_ignore = None
+            if before:
+                self._render("status", *before)
+
+    def applyIgnored_(self, title):
+        self._chat_title = title
+        self._render("chat", title, PALETTE["muted"])
+        if not getattr(self, "_ignore_notice", False):
+            # _render("status") overwrites _normal_status, so remember the real one first.
+            self._status_before_ignore = getattr(self, "_normal_status", None)
+            self._ignore_notice = True
+        self._render("status", "已忽略此聊天 · 不读取、不判断、不生成", PALETTE["muted"])
+        self._show_ignore_button(title, True)
+        self._clear_candidates()
+
+    @objc.python_method
+    def _show_ignore_button(self, title, ignored):
+        self.ignore_button.setHidden_(not bool(title))
+        # Amber marks the switch as engaged; muted is the resting icon.
+        self.ignore_button.setContentTintColor_(
+            PALETTE["amber"] if ignored else PALETTE["muted"])
+        # style_button() gives every action a pill and the build clears it, but this button
+        # is hidden and re-shown on every render, and unhiding makes AppKit re-apply the
+        # styled background. Re-assert on each show so the header icons stay uniform.
+        self.ignore_button.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+        self.ignore_button.layer().setBorderWidth_(0.0)
+        self.ignore_button.setToolTip_(
+            "已忽略此聊天 · 点按恢复读取" if ignored
+            else "忽略此聊天（不读、不判断、不生成）")
+
+    def toggleIgnoreChat_(self, sender):
+        title = self._chat_title
+        conversations = self.conversations
+        if not title or conversations is None:
+            return
+        try:
+            muted = conversations.set_muted(title, not conversations.is_muted(title))
+        except (OSError, ValueError) as exc:
+            self._push("applyError:", f"无法保存忽略状态：{exc}")
+            return
+        self._show_ignore_button(title, muted)
+        # Re-read this frame from scratch: turning it back on must not reuse the empty
+        # snapshot taken while it was ignored.
+        self._fingerprint = None
+        self._last_full = None
+        self._reply_key = None
+        if muted:
+            self._render("chat", title, PALETTE["muted"])
+            self._render("status", "已忽略此聊天 · 不读取、不判断、不生成", PALETTE["muted"])
+            self._clear_candidates()
+        else:
+            self._render("chat", title, PALETTE["accent"])
+            self._render("status", "已恢复读取 · 等下一帧…", PALETTE["muted"])
 
     def applyIncoming_(self, payload):
         # a new message landed but we are not analysing yet (burst in progress):
@@ -2582,6 +2717,12 @@ class HudController(NSObject):
         self._last_risk = 0.0
         self._stream_rows = {}
         self._chat_title = ""
+        # The switch belongs to the chat on screen. With the chat app gone there is no
+        # chat to ignore, and the read loop — the only writer of _painted_title — is not
+        # running, so without this the eye kept floating over an empty header and came
+        # back in whatever colour it had before the app lost focus.
+        self._show_ignore_button("", False)
+        self._painted_title = None
         self._clear_candidates()
         for key in ("chat", "message", "sender", "intent", "confidence", "risk", "actions"):
             self._render(key, "", PALETTE["muted"])

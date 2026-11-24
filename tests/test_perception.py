@@ -24,6 +24,18 @@ class PerceptionTests(unittest.TestCase):
                           block('口', .85, .94, .025, .025)]
                 self.assertEqual(extract_chat_title(blocks), name)
 
+    def test_tall_window_title_band_excludes_in_chat_date_divider(self):
+        # Measured on a 1437x997 WeChat window: the title bottom sits 34pt from the top
+        # and the first in-chat divider ~86pt down. TITLE_BAR_Y_MAX is a fraction of the
+        # window height, so on a 997pt window the band reached 100pt and read the divider
+        # as the chat name ("日、6") — one conversation became eight history buckets.
+        for height in (640, 997, 1200):
+            blocks = [block('Sunflower', .359, 1 - 34 / height, .12, .019),
+                      block('星期日', .293, 1 - 86 / height, .07, .014),
+                      block('日、6', .40, 1 - 86 / height, .04, .014)]
+            with self.subTest(height=height):
+                self.assertEqual(extract_chat_title(blocks, height), 'Sunflower')
+
     def test_title_fragments_join_without_distant_controls(self):
         blocks = [block('项目讨论', .40, .94, .12, .025),
                   block('组', .54, .945, .025, .025),
