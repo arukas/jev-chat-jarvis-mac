@@ -113,6 +113,12 @@ class PerceptionTests(unittest.TestCase):
         self.assertLess(rc.call_args.kwargs['capture_ms'], 1000.0)
         self.assertEqual(rc.call_args.args[2]['wid'], 1)
 
+    def test_ocr_image_defaults_to_zh_hans_only(self):
+        import inspect
+        import perception
+        sig = inspect.signature(perception.ocr_image)
+        self.assertEqual(sig.parameters['languages'].default, ('zh-Hans',))
+
 
 if __name__ == '__main__':
     unittest.main()
