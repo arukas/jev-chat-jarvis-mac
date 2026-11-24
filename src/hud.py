@@ -1640,6 +1640,7 @@ class HudController(NSObject):
         self._read_fail_since = None
         self._read_fail_hidden = False
         self._empty_frame_since = None
+        self._ignored_painted = False
 
         if app is None:
             _log("前台切换 · 聊天应用离开前台，隐藏面板并清空旧结果")
@@ -1940,20 +1941,31 @@ class HudController(NSObject):
             self.reload_conversations()
             chat_title = res.get("chat_title") or ""
             ignored = self._chat_is_ignored(chat_title)
+            title_changed = chat_title != getattr(self, "_painted_title", None)
             # Repaint whenever the chat changes, not only on a fresh frame: a chat with
             # nothing readable yet never produces one, and the header then kept the previous
             # chat's switch and status, so a brand-new chat looked already ignored.
-            if chat_title != getattr(self, "_painted_title", None):
+            if title_changed:
                 self._painted_title = chat_title
                 self._push("applyChatState:", (chat_title, ignored))
             if ignored:
                 # Nothing about an ignored chat is stored or paid for: no history write,
-                # no judge call, no generation.
+                # no judge call, no generation. Retire any previous chat's state and push
+                # applyIgnored_ so stale message/candidates never stay on screen.
                 self._observed_messages, self._observed_offset = [], 0
+                if self._reply_key is not None or self.last_seen is not None or self.analyzed_text is not None:
+                    self._reply_epoch += 1
+                    self._gen_epoch += 1
                 self._reply_key = None
+                self.last_seen = None
+                self.analyzed_text = None
                 self._prejudge_req = self._prejudge_result = None
                 self._pregen_req = self._pregen_result = None
+                if title_changed or fresh_frame or not getattr(self, "_ignored_painted", False):
+                    self._ignored_painted = True
+                    self._push("applyIgnored:", chat_title)
                 return
+            self._ignored_painted = False
             if capture_context_version != self._context_version:
                 self._fingerprint = None
                 self._last_full = None
@@ -2529,12 +2541,18 @@ class HudController(NSObject):
 
     def applyIgnored_(self, title):
         self._chat_title = title
+        self._last_intent = ""
+        self._last_risk = 0.0
         self._render("chat", title, PALETTE["muted"])
         if not getattr(self, "_ignore_notice", False):
             # _render("status") overwrites _normal_status, so remember the real one first.
             self._status_before_ignore = getattr(self, "_normal_status", None)
             self._ignore_notice = True
         self._render("status", "已忽略此聊天 · 不读取、不判断、不生成", PALETTE["muted"])
+        for key in ("message", "sender", "intent", "confidence", "risk", "actions"):
+            self._render(key, "", PALETTE["muted"])
+        if hasattr(self, "_risk_dots"):
+            self._set_risk_scale(None)
         self._show_ignore_button(title, True)
         self._clear_candidates()
 
@@ -2558,22 +2576,30 @@ class HudController(NSObject):
         conversations = self.conversations
         if not title or conversations is None:
             return
-        try:
-            muted = conversations.set_muted(title, not conversations.is_muted(title))
-        except (OSError, ValueError) as exc:
-            self._push("applyError:", f"无法保存忽略状态：{exc}")
-            return
-        self._show_ignore_button(title, muted)
-        # Re-read this frame from scratch: turning it back on must not reuse the empty
-        # snapshot taken while it was ignored.
-        self._fingerprint = None
-        self._last_full = None
-        self._reply_key = None
+        with self._context_lock:
+            try:
+                muted = conversations.set_muted(title, not conversations.is_muted(title))
+            except (OSError, ValueError) as exc:
+                self._push("applyError:", f"无法保存忽略状态：{exc}")
+                return
+            # Re-read this frame from scratch: turning it back on must not reuse the empty
+            # snapshot taken while it was ignored.
+            self._reply_epoch += 1
+            self._gen_epoch += 1
+            self._fingerprint = None
+            self._last_full = None
+            self._reply_key = None
+            self.last_seen = None
+            self.analyzed_text = None
+            self._prejudge_req = self._prejudge_result = None
+            self._pregen_req = self._pregen_result = None
+            self._ignored_painted = muted
         if muted:
-            self._render("chat", title, PALETTE["muted"])
-            self._render("status", "已忽略此聊天 · 不读取、不判断、不生成", PALETTE["muted"])
-            self._clear_candidates()
+            self.applyIgnored_(title)
         else:
+            self._ignore_notice = False
+            self._status_before_ignore = None
+            self._show_ignore_button(title, False)
             self._render("chat", title, PALETTE["accent"])
             self._render("status", "已恢复读取 · 等下一帧…", PALETTE["muted"])
 
