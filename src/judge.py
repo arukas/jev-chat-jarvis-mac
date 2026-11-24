@@ -10,6 +10,7 @@ against a 13.6% majority baseline.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -440,21 +441,26 @@ class Judge:
         probs = self.torch.softmax(logits[ids].float() / self.temperature, -1)
         return probs.cpu().numpy()
 
-    def _forward(self, prompt: str, n_slots: int):
+    def _forward(self, prompt: str, n_slots: int,
+                 slot_char_positions: list[int] | None = None):
         """One forward pass; returns (logits, [token index per 'Answer: (' slot]).
 
         logits[i] is the distribution for position i+1, so reading at the token that
         contains "(" gives the letter distribution for that slot.
-        """
-        import re
 
+        `slot_char_positions` pins each slot's exact "(" offset recorded while building
+        the prompt so literal "Answer: (" inside a chat message can never hijack a slot.
+        When omitted (legacy callers), take the trailing `n_slots` matches.
+        """
         ids = self.tok(prompt, return_tensors="pt", return_offsets_mapping=True).to(self.device)
         offsets = ids.pop("offset_mapping")[0].tolist()
+        if slot_char_positions is None:
+            matches = list(re.finditer(r"Answer: \(", prompt))
+            slot_char_positions = [m.start() + len("Answer: ") for m in matches[-n_slots:]]
         with self.torch.no_grad():
             out = self.model(**ids)
         slot_token_idx = []
-        for m in re.finditer(r"Answer: \(", prompt):
-            char_pos = m.start() + len("Answer: ")
+        for char_pos in slot_char_positions:
             for i, (s, e) in enumerate(offsets):
                 if s <= char_pos < e:
                     slot_token_idx.append(i)
@@ -477,8 +483,9 @@ class Judge:
         for i, c in enumerate(candidates):
             prompt += f"({letters[i]}) {c}\n"
         prompt += "Answer: ("
+        slot_positions = [len(prompt) - 1]
 
-        logits, slots = self._forward(prompt, 1)
+        logits, slots = self._forward(prompt, 1, slot_char_positions=slot_positions)
         probs = self._slot_probs([logits[slots[0]]], len(candidates), 0)
         ranked = sorted(
             ({"text": c, "prob": float(p)} for c, p in zip(candidates, probs)),
@@ -496,13 +503,16 @@ class Judge:
         for i, name in enumerate(intents):
             prompt += f"({letters[i]}) {name} - {INTENTS[name]}\n"
         prompt += "Answer: ("
+        intent_slot_pos = len(prompt) - 1
         # slot 1: risk
         prompt += "\n\nQuestion: 如果直接回复这句话，风险有多大？\nOptions:\n"
         for i, lv in enumerate(RISK_LEVELS):
             prompt += f"({letters[i]}) {lv}\n"
         prompt += "Answer: ("
+        risk_slot_pos = len(prompt) - 1
 
-        logits, slot_token_idx = self._forward(prompt, 2)
+        logits, slot_token_idx = self._forward(
+            prompt, 2, slot_char_positions=[intent_slot_pos, risk_slot_pos])
 
         intent_probs = self._slot_probs([logits[slot_token_idx[0]]], len(intents), 0)
         risk_probs = self._slot_probs([logits[slot_token_idx[1]]], len(RISK_LEVELS), 0)
@@ -519,15 +529,6 @@ class Judge:
             "actions": ACTION_MAP.get(intents[intent_idx], []),
             "message": message,
         }
-
-
-if __name__ == "__main__":
-    import json
-    import sys
-
-    j = Judge()
-    msg = sys.argv[1] if len(sys.argv) > 1 else "这个需求你今天跟一下"
-    print(json.dumps(j.judge(msg), ensure_ascii=False, indent=1))
 
 
 class FallbackJudge:
@@ -600,3 +601,12 @@ def make_judge():
     except Exception:
         pass
     return Judge()
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+
+    j = Judge()
+    msg = sys.argv[1] if len(sys.argv) > 1 else "这个需求你今天跟一下"
+    print(json.dumps(j.judge(msg), ensure_ascii=False, indent=1))
