@@ -43,9 +43,11 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
     # the settings window's offline-model section writes it through the same guarded path.
     allowed = {f"{p}_{f}" for p in PREFIXES for f in FIELDS} | {
         "JUDGE_BACKEND", "JEV_HISTORY", "JEV_CONTEXT_MESSAGES",
-        "JEV_MESSAGE_REGION", "JEV_INPUT_REGION", "JEV_CANDIDATES_PER_TONE"}
+        "JEV_MESSAGE_REGION", "JEV_INPUT_REGION", "JEV_CANDIDATES_PER_TONE",
+        "JEV_ENABLED_APPS"}
     if not changes.keys() <= allowed:
         raise ValueError("不支持的配置项。")
+    changes = dict(changes)
     for value in changes.values():
         if any(c in value for c in "\r\n\0"):
             raise ValueError("配置值不能含换行或空字符。")
@@ -55,6 +57,9 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
         raise ValueError("历史记录开关必须是 0 或 1")
     if "JEV_CANDIDATES_PER_TONE" in changes:
         styles.validate_candidate_count(changes["JEV_CANDIDATES_PER_TONE"])
+    if "JEV_ENABLED_APPS" in changes:
+        from apps import registry
+        changes["JEV_ENABLED_APPS"] = registry.validate_enabled_apps(changes["JEV_ENABLED_APPS"])
     remaining = dict(changes)
     lines = []
     for line in original.splitlines(keepends=True):

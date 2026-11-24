@@ -66,7 +66,7 @@ class SettingsController(NSObject):
             PALETTE["amber"].colorWithAlphaComponent_(0.18))
         restart_box.setFrame_(NSMakeRect(24, 530, 710, 34))
         view.addSubview_(restart_box)
-        restart_notice = self.label(view, "模型配置保存后重启 · 会话设置保存后立即生效",
+        restart_notice = self.label(view, "模型配置保存后重启 · 会话与软件开关保存后立即生效",
                                     38, 536, 680, 20, 13, PALETTE["amber"])
         restart_notice.setFont_(A.NSFont.boldSystemFontOfSize_(13))
 
@@ -144,6 +144,7 @@ class SettingsController(NSObject):
             item.setView_(panel)
             self.tabs.addTabViewItem_(item)
         self.build_context_tab()
+        self.build_apps_tab()
         view.addSubview_(self.tabs)
         # #38: 离线判断模型管理。删除是显式确认动作；「启用」只写选择，真正的
         # 下载发生在下次启动的预热——设置窗口里不藏一个 7 GB 的下载按钮。
@@ -257,6 +258,54 @@ class SettingsController(NSObject):
         panel.addSubview_(self.history_menu)
         item.setView_(panel)
         self.tabs.addTabViewItem_(item)
+
+    @objc.python_method
+    def build_apps_tab(self):
+        from apps import registry
+        item = A.NSTabViewItem.alloc().initWithIdentifier_("APPS")
+        item.setLabel_("启用软件")
+        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+        group = ui_style.make_surface(10, PALETTE["row"], PALETTE["edge"])
+        group.setFrame_(NSMakeRect(12, 92, 666, 196))
+        panel.addSubview_(group)
+        title = self.label(panel, "全局启用哪些聊天软件", 26, 256, 490, 20, 13)
+        title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
+        self.label(panel, "未勾选的软件在前台时不会读屏、不弹出悬浮窗，也不预热其读屏引擎（对应 JEV_ENABLED_APPS）。",
+                   26, 234, 638, 18, 11, PALETTE["muted"])
+        divider = ui_style.make_surface(0, PALETTE["edge"])
+        divider.setFrame_(NSMakeRect(26, 224, 638, 1))
+        panel.addSubview_(divider)
+        enabled = set(registry.enabled_app_keys())
+        env_locked = userconfig.source_of(registry.ENABLED_APPS_VAR) == "环境变量"
+        self.app_switches: dict[str, object] = {}
+        y = 182
+        for app in registry.APPS:
+            btn = A.NSButton.alloc().initWithFrame_(NSMakeRect(26, y, 240, 22))
+            btn.setButtonType_(A.NSButtonTypeSwitch)
+            label = f"{registry.app_label(app)}（{app.key}）"
+            btn.setTitle_(label)
+            btn.setFont_(A.NSFont.boldSystemFontOfSize_(12))
+            btn.setState_(A.NSControlStateValueOn if app.key in enabled else A.NSControlStateValueOff)
+            btn.setTarget_(self)
+            btn.setAction_("appToggleChanged:")
+            btn.setAccessibilityLabel_(f"启用 {label}")
+            if env_locked:
+                btn.setEnabled_(False)
+                btn.setToolTip_("由启动环境变量 JEV_ENABLED_APPS 控制；修改环境变量后重启。")
+            panel.addSubview_(btn)
+            self.app_switches[app.key] = btn
+            desc = ("截图 + Vision OCR（需屏幕录制权限）" if app.needs_screen_capture
+                    else "系统无障碍文本接口直读（需辅助功能权限，不截图）")
+            self.label(panel, desc, 48, y - 18, 600, 16, 11, PALETTE["muted"])
+            y -= 52
+        self.initial[registry.ENABLED_APPS_VAR] = registry.format_enabled_apps(enabled)
+        self.label(panel, "保存后立即生效，无需重启应用；全部取消勾选将全局暂停对所有聊天软件的自动响应。",
+                   18, 56, 650, 24, 11, PALETTE["muted"])
+        item.setView_(panel)
+        self.tabs.addTabViewItem_(item)
+
+    def appToggleChanged_(self, sender):
+        self.set_status("启用软件已修改，点击「保存配置」后立即生效。")
 
     @objc.python_method
     def refresh_contexts(self):
@@ -487,6 +536,7 @@ class SettingsController(NSObject):
 
     @objc.python_method
     def changed(self):
+        from apps import registry
         values = {f"{p}_{k}": v for p in config.PREFIXES for k, v in self.values(p).items()}
         if self.history_switch.isEnabled():
             values["JEV_HISTORY"] = "1" if self.history_switch.state() == A.NSOnState else "0"
@@ -494,6 +544,10 @@ class SettingsController(NSObject):
             values["JEV_CONTEXT_MESSAGES"] = str(self.context_count.stringValue()).strip()
         if self.candidate_count.isEnabled():
             values["JEV_CANDIDATES_PER_TONE"] = str(self.candidate_count.titleOfSelectedItem())
+        if hasattr(self, "app_switches") and any(btn.isEnabled() for btn in self.app_switches.values()):
+            picked = [key for key, btn in self.app_switches.items()
+                      if btn.state() == A.NSControlStateValueOn]
+            values[registry.ENABLED_APPS_VAR] = registry.format_enabled_apps(picked)
         return {k: v for k, v in values.items() if v != self.initial[k]}
 
     def controlTextDidChange_(self, notification):
@@ -542,14 +596,19 @@ class SettingsController(NSObject):
         self.initial.update(changes)
         self.file_values.update(changes)
         context_changes = {k: v for k, v in changes.items() if k in ("JEV_HISTORY", "JEV_CONTEXT_MESSAGES")}
+        app_change = changes.get("JEV_ENABLED_APPS")
         for key, value in context_changes.items():
             userconfig.session_override(key, value)
+        if app_change is not None:
+            userconfig.session_override("JEV_ENABLED_APPS", app_change)
         if context_changes and self.hud:
             try:
                 effective_count = message_limit(userconfig.get("JEV_CONTEXT_MESSAGES") or "20")
             except ValueError:
                 effective_count = 20
             self.hud.configure_context(userconfig.get("JEV_HISTORY") == "1", str(effective_count))
+        if app_change is not None and self.hud and hasattr(self.hud, "configure_enabled_apps"):
+            self.hud.configure_enabled_apps()
         saved = bool(changes)
         try:
             for title, text in backgrounds.items():
@@ -561,11 +620,12 @@ class SettingsController(NSObject):
                             + ((self.hud.conversations.error if self.hud.conversations else "")
                                or "请检查本地数据权限或磁盘空间后重试。") + "背景草稿仍保留。", "error")
             return
-        model_changes = changes.keys() - context_changes.keys()
-        if model_changes and not (context_changes or backgrounds):
+        live_keys = set(context_changes) | ({"JEV_ENABLED_APPS"} if app_change is not None else set())
+        model_changes = changes.keys() - live_keys
+        if model_changes and not (live_keys or backgrounds):
             self.set_status("已保存。请退出并重新打开应用；当前会话继续使用启动时的配置。", "success")
         else:
-            self.set_status("会话记录与背景已保存并生效。" + ("模型配置需退出并重新打开应用。" if model_changes else ""), "success")
+            self.set_status("会话与软件设置已保存并立即生效。" + ("模型配置需退出并重新打开应用。" if model_changes else ""), "success")
 
     def fetchModels_(self, sender):
         self.start_request(sender.tag(), True)

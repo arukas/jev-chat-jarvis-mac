@@ -87,6 +87,45 @@ class RegistryTests(unittest.TestCase):
         self.assertIsNone(registry.app_by_key('feishu'))
         self.assertEqual([a.key for a in registry.APPS], ['wechat', 'qq'])
 
+    def test_parse_and_validate_enabled_apps(self):
+        from apps import registry
+        self.assertEqual(registry.parse_enabled_apps(None), ('wechat', 'qq'))
+        self.assertEqual(registry.parse_enabled_apps(''), ('wechat', 'qq'))
+        self.assertEqual(registry.parse_enabled_apps('all'), ('wechat', 'qq'))
+        self.assertEqual(registry.parse_enabled_apps('none'), ())
+        self.assertEqual(registry.parse_enabled_apps('QQ, wechat'), ('wechat', 'qq'))
+        self.assertEqual(registry.parse_enabled_apps('qq,unknown'), ('qq',))
+        self.assertEqual(registry.format_enabled_apps([]), 'none')
+        self.assertEqual(registry.format_enabled_apps(['qq']), 'qq')
+        self.assertEqual(registry.validate_enabled_apps('QQ, wechat'), 'wechat,qq')
+        self.assertEqual(registry.validate_enabled_apps('none'), 'none')
+        self.assertEqual(registry.validate_enabled_apps('all'), 'wechat,qq')
+        self.assertEqual(registry.validate_enabled_apps(''), '')
+        with self.assertRaises(ValueError):
+            registry.validate_enabled_apps('wechat,feishu')
+
+    def test_frontmost_app_respects_enabled_apps_config(self):
+        import userconfig
+        from apps import registry
+        with patch.object(userconfig, 'get', return_value='wechat'):
+            self.assertEqual(registry.enabled_app_keys(), ('wechat',))
+            self.assertTrue(registry.is_app_enabled('wechat'))
+            self.assertFalse(registry.is_app_enabled('qq'))
+            with patch.object(registry, '_frontmost', return_value=('com.tencent.xinWeChat', '微信')):
+                self.assertEqual(registry.frontmost_app().key, 'wechat')
+            with patch.object(registry, '_frontmost', return_value=('com.tencent.qq', 'QQ')):
+                self.assertIsNone(registry.frontmost_app())
+        with patch.object(userconfig, 'get', return_value='qq'):
+            with patch.object(registry, '_frontmost', return_value=('com.tencent.xinWeChat', '微信')):
+                self.assertIsNone(registry.frontmost_app())
+            with patch.object(registry, '_frontmost', return_value=('com.tencent.qq', 'QQ')):
+                self.assertEqual(registry.frontmost_app().key, 'qq')
+        with patch.object(userconfig, 'get', return_value='none'):
+            with patch.object(registry, '_frontmost', return_value=('com.tencent.xinWeChat', '微信')):
+                self.assertIsNone(registry.frontmost_app())
+            with patch.object(registry, '_frontmost', return_value=('com.tencent.qq', 'QQ')):
+                self.assertIsNone(registry.frontmost_app())
+
 
 if __name__ == '__main__':
     unittest.main()

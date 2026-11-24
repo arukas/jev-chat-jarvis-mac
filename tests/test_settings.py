@@ -74,6 +74,17 @@ class SettingsFiles(unittest.TestCase):
                 with patch.object(userconfig, '_startup_sources', None), patch.dict(os.environ, {}, clear=True):
                     self.assertEqual(userconfig.provider('OPENAI')['model'], 'after')
 
+    def test_write_settings_persists_and_validates_enabled_apps(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'env'
+            text = config.write_settings(path, '', {'JEV_ENABLED_APPS': 'QQ, wechat'})
+            self.assertIn('export JEV_ENABLED_APPS=wechat,qq', text)
+            text = config.write_settings(path, text, {'JEV_ENABLED_APPS': 'none'})
+            self.assertIn('export JEV_ENABLED_APPS=none', text)
+            with self.assertRaises(ValueError):
+                config.write_settings(path, text, {'JEV_ENABLED_APPS': 'wechat,invalid_im'})
+            self.assertEqual(path.read_text(), text)
+
 
 class Server(BaseHTTPRequestHandler):
     requests = []

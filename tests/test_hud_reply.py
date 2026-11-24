@@ -876,6 +876,27 @@ class HudReplyTests(unittest.TestCase):
         warm_capture.warm.assert_called_once()
         ax_qq.warm.assert_called_once()
 
+    def test_warm_apps_skips_disabled_and_already_warmed_apps(self):
+        warm_wechat = SimpleNamespace(key='wechat', display_name='微信', warm=Mock(return_value=5.0))
+        warm_qq = SimpleNamespace(key='qq', display_name='QQ', warm=Mock(return_value=None))
+        with patch.dict(HUD, {'APPS': (warm_wechat, warm_qq),
+                              'is_app_enabled': lambda key: key == 'qq'}):
+            self.h._warm_apps()
+            self.h._warm_apps()
+        warm_wechat.warm.assert_not_called()
+        warm_qq.warm.assert_called_once()
+
+    def test_configure_enabled_apps_hides_disabled_foreground_app(self):
+        self.h._app = HUD['FAKE_APP']
+        self.h._reply_key = ('wechat', 'chat', '下午开会')
+        with patch.dict(HUD, {'is_app_enabled': lambda key: False,
+                              'enabled_apps': lambda: ()}):
+            self.h.configure_enabled_apps()
+        self.flush()
+        self.assertIsNone(self.h._app)
+        self.assertIsNone(self.h._reply_key)
+        self.h.applyForegroundHidden_.assert_called_once_with('聊天应用不在前台')
+
     def test_qq_missing_accessibility_gates_reads(self):
         ax_app = build_app()
         HUD['frontmost_app'].return_value = ax_app

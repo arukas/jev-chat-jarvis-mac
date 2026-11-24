@@ -74,7 +74,14 @@ from perception import (  # noqa: E402
     screen_capture_ok,
     request_screen_capture,
 )
-from apps.registry import APPS, UNKNOWN, frontmost_app  # noqa: E402  按前台 App 分发（各支持平台）
+from apps.registry import (  # noqa: E402  按前台 App 分发（各支持平台）
+    APPS,
+    UNKNOWN,
+    app_label,
+    enabled_apps,
+    frontmost_app,
+    is_app_enabled,
+)
 import judge  # noqa: E402  (model_cached / model_disk_usage: the #38 onboarding + settings)
 from judge import LowMemoryError, ModelNotDownloadedError, make_judge  # noqa: E402
 from generate import BUILTIN_SOURCE, Generator, load_credentials  # noqa: E402
@@ -2826,10 +2833,29 @@ class HudController(NSObject):
 
     # --------------------------------------------------------------- warm-up
     @objc.python_method
+    def configure_enabled_apps(self):
+        """Apply updated JEV_ENABLED_APPS immediately without restarting."""
+        if self._app is not None and not is_app_enabled(self._app.key):
+            self._set_foreground_state(None)
+        warmed = getattr(self, "_warmed_apps", None) or set()
+        if any(getattr(a, "needs_screen_capture", False) and a.key not in warmed
+               for a in enabled_apps()):
+            threading.Thread(target=self._warm_apps, daemon=True).start()
+
+    @objc.python_method
     def _warm_apps(self):
-        """Pay each chat app's one-off read-path load (Vision for the OCR path; the text-interface path has none)."""
+        """Pay each enabled chat app's one-off read-path load (Vision for the OCR path; the text-interface path has none)."""
+        warmed = getattr(self, "_warmed_apps", None)
+        if warmed is None:
+            warmed = set()
+            self._warmed_apps = warmed
         for app in APPS:
+            key = getattr(app, "key", None)
+            if key is not None and (not is_app_enabled(key) or key in warmed):
+                continue
             ms = app.warm()
+            if key is not None:
+                warmed.add(key)
             if ms is None:
                 continue                  # 文本接口路径没有一次性加载
             if ms >= 0:
@@ -3035,10 +3061,12 @@ def main() -> None:  # pragma: no cover — GUI 启动粘合，只有真启动�
     # First line of every run: which backends are actually in play. Support requests
     # always need it, and it proves the log is live before the first message arrives.
     _base, _key, _model, _src, _api = load_credentials()
+    _enabled_names = "、".join(app_label(a) for a in enabled_apps()) or "无（全部停用）"
     _log(f"启动 · 判断层 "
          f"{'TypeSafe Jev' if userconfig.get('TYPESAFE_API_KEY') else '本地 decider-2b'}"
          f" · 生成层 {(_base + ' / ' + _model) if _key else '未配置（候选区会是空的）'}"
          + ("（内置默认）" if _src == BUILTIN_SOURCE else "")
+         + f" · 启用软件 {_enabled_names}"
          + (" · YOLO 框开" if controller._show_boxes else ""))
     if styles.REJECTED_TONES:
         # the dropdown silently missing a tone the user typed is a support ticket; say
