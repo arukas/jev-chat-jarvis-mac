@@ -103,5 +103,71 @@ class GoutoujunshiToneTests(unittest.TestCase):
         self.assertEqual(styles.DEFAULT_SLOTS, ["高情商话术", "贴吧老哥 v1.0", "阴阳怪气"])
 
 
+class DefaultSlotsAndPromptReloadTests(unittest.TestCase):
+    def tearDown(self):
+        styles.reload()
+
+    def test_parse_and_validate_default_slots(self):
+        self.assertEqual(
+            styles.parse_default_slots("狗头军师,狗头军师·会撩,不用"),
+            ["狗头军师", "狗头军师·会撩", "不用"],
+        )
+        self.assertEqual(
+            styles.parse_default_slots("稳如老狗"),
+            ["稳如老狗", "不用", "不用"],
+        )
+        # 全部非法时回退内置默认
+        self.assertEqual(
+            styles.parse_default_slots("不存在话术,不用,不用"),
+            styles.DEFAULT_SLOTS,
+        )
+        self.assertEqual(
+            styles.validate_default_slots("稳如老狗, 夸夸"),
+            "稳如老狗,夸夸,不用",
+        )
+        with self.assertRaises(ValueError):
+            styles.validate_default_slots("不用,不用,不用")
+        with self.assertRaises(ValueError):
+            styles.validate_default_slots("高情商话术,不存在的话术,不用")
+        with self.assertRaises(ValueError):
+            styles.validate_default_slots("高情商话术,夸夸,稳如老狗,阴阳怪气")
+
+    def test_serialize_and_validate_custom_tones(self):
+        prompts = dict(styles.BUILTIN)
+        prompts["高情商话术"] = "第一行要求\n第二行要求：回复直截了当，不绕弯子且给出明确时间点。"
+        prompts["摸鱼大师"] = "像资深摸鱼选手，把活推得漂亮又不失礼，绝不硬怼老板。"
+        serialized = styles.serialize_custom_tones(prompts, omit_builtin_defaults=True)
+        # 未改动的内置话术不写入 env，只保留修改过的内置和新增的自定义话术
+        self.assertNotIn("稳如老狗=", serialized)
+        self.assertIn("高情商话术=第一行要求 第二行要求：回复直截了当，不绕弯子且给出明确时间点。", serialized)
+        self.assertIn("摸鱼大师=像资深摸鱼选手，把活推得漂亮又不失礼，绝不硬怼老板。", serialized)
+        self.assertEqual(styles.validate_custom_tones(serialized), serialized)
+        with self.assertRaises(ValueError):
+            styles.validate_custom_tones("摸鱼大师=太短")
+        with self.assertRaises(ValueError):
+            styles.serialize_custom_tones({"摸鱼大师": "包含竖线|会导致分隔错误必须拦截"})
+
+    def test_reload_updates_presets_in_place_and_strip_label(self):
+        custom_prompt = "像个极简回复大师，十个字以内把事说清楚，绝不寒暄客套。"
+        presets_ref = styles.PRESETS
+        with patch.object(styles.userconfig, "get",
+                          side_effect=lambda k: f"极简大师={custom_prompt}" if k == styles.CUSTOM_VAR else ""):
+            styles.reload()
+            self.assertIs(styles.PRESETS, presets_ref)
+            self.assertEqual(styles.PRESETS["极简大师"], custom_prompt)
+            self.assertEqual(styles.strip_label("极简大师：收到，三点发你"), "收到，三点发你")
+        styles.reload()
+        self.assertNotIn("极简大师", styles.PRESETS)
+
+    def test_resolve_slot_tones_uses_saved_or_falls_back_to_global_defaults(self):
+        with patch.object(styles.userconfig, "get", return_value="稳如老狗,夸夸,不用"):
+            self.assertEqual(styles.resolve_slot_tones(None), ["稳如老狗", "夸夸", "不用"])
+            self.assertEqual(styles.resolve_slot_tones(["狗头军师", "不用", "不用"]),
+                             ["狗头军师", "不用", "不用"])
+            # 若记忆的话术全部已删除，安全回退全局默认
+            self.assertEqual(styles.resolve_slot_tones(["已删除自定义", "不用", "不用"]),
+                             ["稳如老狗", "夸夸", "不用"])
+
+
 if __name__ == '__main__':
     unittest.main()

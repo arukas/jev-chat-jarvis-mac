@@ -44,7 +44,7 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
     allowed = {f"{p}_{f}" for p in PREFIXES for f in FIELDS} | {
         "JUDGE_BACKEND", "JEV_HISTORY", "JEV_CONTEXT_MESSAGES",
         "JEV_MESSAGE_REGION", "JEV_INPUT_REGION", "JEV_CANDIDATES_PER_TONE",
-        "JEV_ENABLED_APPS"}
+        "JEV_ENABLED_APPS", "JEV_TONES", "JEV_DEFAULT_TONES"}
     if not changes.keys() <= allowed:
         raise ValueError("不支持的配置项。")
     changes = dict(changes)
@@ -57,6 +57,14 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
         raise ValueError("历史记录开关必须是 0 或 1")
     if "JEV_CANDIDATES_PER_TONE" in changes:
         styles.validate_candidate_count(changes["JEV_CANDIDATES_PER_TONE"])
+    effective_presets = None
+    if "JEV_TONES" in changes:
+        changes["JEV_TONES"] = styles.validate_custom_tones(changes["JEV_TONES"])
+        parsed_custom, _ = styles.parse_custom_tones(changes["JEV_TONES"], strict=True)
+        effective_presets = {**styles.BUILTIN, **parsed_custom}
+    if "JEV_DEFAULT_TONES" in changes:
+        changes["JEV_DEFAULT_TONES"] = styles.validate_default_slots(
+            changes["JEV_DEFAULT_TONES"], presets=effective_presets)
     if "JEV_ENABLED_APPS" in changes:
         from apps import registry
         changes["JEV_ENABLED_APPS"] = registry.validate_enabled_apps(changes["JEV_ENABLED_APPS"])

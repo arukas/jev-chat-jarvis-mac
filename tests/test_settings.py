@@ -85,6 +85,23 @@ class SettingsFiles(unittest.TestCase):
                 config.write_settings(path, text, {'JEV_ENABLED_APPS': 'wechat,invalid_im'})
             self.assertEqual(path.read_text(), text)
 
+    def test_write_settings_persists_and_validates_default_tones_and_prompts(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'env'
+            # 同一次保存里新增自定义话术并设为全局默认，校验应识别新话术
+            custom = '摸鱼大师=像个资深摸鱼选手，把活推得很得体又不失礼，给个延后时间点。'
+            text = config.write_settings(path, '', {
+                'JEV_TONES': custom,
+                'JEV_DEFAULT_TONES': '摸鱼大师,高情商话术,不用',
+            })
+            self.assertEqual(userconfig.parse_env_file(path)['JEV_TONES'], custom)
+            self.assertEqual(userconfig.parse_env_file(path)['JEV_DEFAULT_TONES'], '摸鱼大师,高情商话术,不用')
+            with self.assertRaises(ValueError):
+                config.write_settings(path, text, {'JEV_DEFAULT_TONES': '不用,不用,不用'})
+            with self.assertRaises(ValueError):
+                config.write_settings(path, text, {'JEV_TONES': '摸鱼大师=太短'})
+            self.assertEqual(path.read_text(), text)
+
 
 class Server(BaseHTTPRequestHandler):
     requests = []

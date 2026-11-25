@@ -235,12 +235,11 @@ class HudController(NSObject):
         self._normal_status = (IDLE_STATUS, PALETTE["muted"])
         self._model_status = None
         self.generator = Generator()
-        # 话术: per-slot tone selection. A slot on 不用 contributes no request and no rows,
-        # so the panel is exactly as tall as the groups actually in use.
-        self.slot_tones = list(styles.DEFAULT_SLOTS) + [styles.NONE_LABEL]
-        self.slot_tones = self.slot_tones[:styles.MAX_SLOTS]
-        while len(self.slot_tones) < styles.MAX_SLOTS:
-            self.slot_tones.append(styles.NONE_LABEL)
+        # 话术: per-slot tone selection. Starts from global defaults (JEV_DEFAULT_TONES),
+        # and switches to each chat's remembered selection when a conversation is opened.
+        # A slot on 不用 contributes no request and no rows, so the panel is exactly as tall
+        # as the groups actually in use.
+        self.slot_tones = styles.default_slots()
         self._dds: list = []
         self._dd_boxes: list = []       # the flat fields the dropdowns are drawn into
         self._group_boxes: list = []    # translucent surfaces behind active tone groups
@@ -550,7 +549,7 @@ class HudController(NSObject):
             pop.setBordered_(False)          # <- no bezel, no accent-coloured chevron
             # the one discoverability aid the flat field gets: grey-on-grey reads as text,
             # a tooltip costs nothing visually and answers "can I click this?"
-            pop.setToolTip_("点这里换话术（每种一组，各出 2 条）")
+            pop.setToolTip_(f"点这里换话术（每种一组，各出 {styles.PER_TONE} 条；按当前聊天单独记忆）")
             pop.setFont_(NSFont.boldSystemFontOfSize_(TONE_DD_FONT))
             pop.setContentTintColor_(PALETTE["text"])
             pop.addItemsWithTitles_(tone_items)
@@ -887,6 +886,11 @@ class HudController(NSObject):
         except OSError:
             alert = AppKit.NSAlert.alloc().init()
             alert.setMessageText_("无法读取配置文件，请检查文件权限。")
+            alert.runModal()
+        except Exception as exc:
+            _log(f"打开设置窗口失败 {type(exc).__name__}: {exc}")
+            alert = AppKit.NSAlert.alloc().init()
+            alert.setMessageText_(f"无法打开设置窗口（{type(exc).__name__}），请重启应用后重试。")
             alert.runModal()
 
     @objc.python_method
@@ -1268,11 +1272,18 @@ class HudController(NSObject):
             self._render("status", f"填入失败：{reason}", PALETTE["red"])
 
     def toneChanged_(self, sender):
-        """A 话术 dropdown moved: the verdict is still valid, only the writing changes."""
+        """A 话术 dropdown moved: remember it for this chat and re-generate."""
         picked = [p.titleOfSelectedItem() or styles.NONE_LABEL for p in self._dds]
         if picked == self.slot_tones:
             return
         self.slot_tones = picked
+        title = getattr(self, "_chat_title", "") or ((self._last_full or {}).get("chat_title") or "")
+        if title and getattr(self, "conversations", None) is not None:
+            with self._context_lock:
+                try:
+                    self.conversations.save_tones(title, picked)
+                except (OSError, ValueError) as exc:
+                    _log(f"保存会话话术记忆失败: {type(exc).__name__}")
         self._reply_epoch += 1
         self._gen_epoch += 1
         self._prejudge_req = self._prejudge_result = None
@@ -1947,6 +1958,12 @@ class HudController(NSObject):
             if title_changed:
                 self._painted_title = chat_title
                 self._push("applyChatState:", (chat_title, ignored))
+                if self.conversations is not None and not self.conversations.error:
+                    target_tones = self._tones_for_chat(chat_title)
+                    if list(target_tones) != list(self.slot_tones):
+                        self.slot_tones = list(target_tones)
+                        self._pregen_req = self._pregen_result = None
+                        self._push("applySlotTones:", list(target_tones))
             if ignored:
                 # Nothing about an ignored chat is stored or paid for: no history write,
                 # no judge call, no generation. Retire any previous chat's state and push
@@ -2338,6 +2355,42 @@ class HudController(NSObject):
                 self._context_changed()
 
     @objc.python_method
+    def _tones_for_chat(self, title: str) -> list[str]:
+        """Return this chat's remembered tones, or global defaults when none are saved."""
+        saved = None
+        conversations = getattr(self, "conversations", None)
+        if title and conversations is not None and not conversations.error:
+            saved = conversations.tones(title)
+        return styles.resolve_slot_tones(saved)
+
+    @objc.python_method
+    def configure_tones(self):
+        """Apply updated global default tones and global tone prompts immediately."""
+        with self._context_lock:
+            styles.reload()
+            self.reload_conversations()
+            title = getattr(self, "_chat_title", "") or ((self._last_full or {}).get("chat_title") or "")
+            target = self._tones_for_chat(title)
+            self.slot_tones = list(target)
+            self._pregen_req = self._pregen_result = None
+        self._push("applySlotTones:", list(target))
+
+    @objc.python_method
+    def reset_chat_tones(self, title: str):
+        """Clear a chat's remembered tones so it falls back to global defaults."""
+        with self._context_lock:
+            self.reload_conversations()
+            if self.conversations is None:
+                raise OSError("会话存储不可用")
+            self.conversations.save_tones(title, None)
+            current = getattr(self, "_chat_title", "") or ((self._last_full or {}).get("chat_title") or "")
+            if current and self.conversations.resolve_title(current) == self.conversations.resolve_title(title):
+                target = styles.default_slots()
+                self.slot_tones = list(target)
+                self._pregen_req = self._pregen_result = None
+                self._push("applySlotTones:", list(target))
+
+    @objc.python_method
     def clear_history(self, title=None):
         with self._context_lock:
             self.reload_conversations()
@@ -2524,6 +2577,19 @@ class HudController(NSObject):
         title, ignored = payload
         self._chat_title = title
         self._show_ignore_button(title, bool(ignored))
+
+    def applySlotTones_(self, tones):
+        """Sync HUD tone dropdown choices and active slots on the main thread."""
+        items = styles.labels() + [styles.NONE_LABEL]
+        resolved = styles.resolve_slot_tones(tones)
+        self.slot_tones = list(resolved)
+        if getattr(self, "_dds", None):
+            for slot, pop in enumerate(self._dds):
+                pop.removeAllItems()
+                pop.addItemsWithTitles_(items)
+                pop.selectItemWithTitle_(self.slot_tones[slot])
+            if not getattr(self, "_collapsed", False):
+                self._relayout()
 
     def applyChat_(self, title):
         self._chat_title = title

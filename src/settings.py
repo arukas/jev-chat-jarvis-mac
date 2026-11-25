@@ -66,7 +66,7 @@ class SettingsController(NSObject):
             PALETTE["amber"].colorWithAlphaComponent_(0.18))
         restart_box.setFrame_(NSMakeRect(24, 530, 710, 34))
         view.addSubview_(restart_box)
-        restart_notice = self.label(view, "模型配置保存后重启 · 会话与软件开关保存后立即生效",
+        restart_notice = self.label(view, "模型配置保存后重启 · 话术、会话与软件开关保存后立即生效",
                                     38, 536, 680, 20, 13, PALETTE["amber"])
         restart_notice.setFont_(A.NSFont.boldSystemFontOfSize_(13))
 
@@ -143,6 +143,7 @@ class SettingsController(NSObject):
                 self.controls.append(button)
             item.setView_(panel)
             self.tabs.addTabViewItem_(item)
+        self.build_tones_tab()
         self.build_context_tab()
         self.build_apps_tab()
         view.addSubview_(self.tabs)
@@ -248,16 +249,209 @@ class SettingsController(NSObject):
         self.label(panel, "记录在本机保存，推理时发送给所选模型服务。", 18, 5, 500, 18, 10, PALETTE["muted"])
         self.history_menu = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(546, 0, 126, 28), True)
         self.history_menu.setFont_(A.NSFont.systemFontOfSize_(11))
-        self.history_menu.addItemsWithTitles_(["管理记录", "清空所选会话记录", "清空全部记录"])
+        self.history_menu.addItemsWithTitles_(["管理记录", "清空所选会话记录", "清空全部记录", "恢复所选会话默认话术"])
         self.history_menu.menu().setAutoenablesItems_(False)
-        self.history_menu.setToolTip_("清空立即生效，保留聊天背景。")
-        for index, action in enumerate(("clearCurrentHistory:", "clearAllHistory:"), 1):
+        self.history_menu.setToolTip_("清空立即生效，保留聊天背景；也可恢复所选会话为全局默认话术。")
+        for index, action in enumerate(("clearCurrentHistory:", "clearAllHistory:", "resetCurrentChatTones:"), 1):
             entry = self.history_menu.itemAtIndex_(index)
             entry.setTarget_(self)
             entry.setAction_(action)
         panel.addSubview_(self.history_menu)
         item.setView_(panel)
         self.tabs.addTabViewItem_(item)
+
+    @objc.python_method
+    def build_tones_tab(self):
+        item = A.NSTabViewItem.alloc().initWithIdentifier_("TONES")
+        item.setLabel_("候选话术")
+        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+
+        group = ui_style.make_surface(10, PALETTE["row"], PALETTE["edge"])
+        group.setFrame_(NSMakeRect(12, 194, 666, 94))
+        panel.addSubview_(group)
+        title = self.label(panel, "全局默认候选回复类型", 26, 260, 490, 20, 13)
+        title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
+        self.label(panel, "新会话默认使用以下槽位；在悬浮窗切换话术会自动按每个聊天单独记忆（对应 JEV_DEFAULT_TONES）。",
+                   26, 240, 638, 18, 11, PALETTE["muted"])
+        default_env_locked = userconfig.source_of(styles.DEFAULT_SLOTS_VAR) == "环境变量"
+        current_defaults = styles.default_slots()
+        self.default_tone_pickers = []
+        for slot in range(styles.MAX_SLOTS):
+            x = 26 + slot * 218
+            self.label(panel, f"槽位 {slot + 1}", x, 208, 42, 20, 11, PALETTE["muted"])
+            pop = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(x + 42, 203, 162, 28), False)
+            pop.setFont_(A.NSFont.systemFontOfSize_(12))
+            pop.setTarget_(self)
+            pop.setAction_("defaultToneChanged:")
+            pop.setAccessibilityLabel_(f"全局默认候选槽位 {slot + 1}")
+            if default_env_locked:
+                pop.setEnabled_(False)
+                pop.setToolTip_("由启动环境变量 JEV_DEFAULT_TONES 控制；修改环境变量后重启。")
+            panel.addSubview_(pop)
+            self.default_tone_pickers.append(pop)
+        self.initial[styles.DEFAULT_SLOTS_VAR] = styles.format_default_slots(current_defaults)
+
+        title = self.label(panel, "话术提示词（全局）", 18, 158, 132, 22, 13)
+        title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
+        self.tone_prompt_picker = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(150, 155, 190, 28), False)
+        self.tone_prompt_picker.setFont_(A.NSFont.systemFontOfSize_(12))
+        self.tone_prompt_picker.setAccessibilityLabel_("选择要编辑提示词的话术")
+        self.tone_prompt_picker.setTarget_(self)
+        self.tone_prompt_picker.setAction_("selectTonePrompt:")
+        panel.addSubview_(self.tone_prompt_picker)
+        self.tone_prompt_badge = self.label(panel, "", 348, 160, 128, 18, 11, PALETTE["muted"])
+        self.tone_reset_btn = self.button(panel, "恢复默认", "resetTonePrompt:", 482, 153, 88)
+        self.tone_add_btn = self.button(panel, "新增话术…", "addCustomTone:", 578, 153, 90)
+        self.controls.extend((self.tone_reset_btn, self.tone_add_btn))
+
+        scroll = A.NSScrollView.alloc().initWithFrame_(NSMakeRect(18, 34, 650, 110))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(A.NSNoBorder)
+        scroll.setWantsLayer_(True)
+        scroll.layer().setCornerRadius_(ui_style.RADIUS_FIELD)
+        scroll.layer().setBorderColor_(PALETTE["edge"].CGColor())
+        scroll.layer().setBorderWidth_(0.75)
+        scroll.layer().setMasksToBounds_(True)
+        self.tone_prompt_editor = A.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 630, 110))
+        self.tone_prompt_editor.setRichText_(False)
+        self.tone_prompt_editor.setFont_(A.NSFont.systemFontOfSize_(12))
+        self.tone_prompt_editor.setTextColor_(PALETTE["text"])
+        self.tone_prompt_editor.setBackgroundColor_(PALETTE["field"])
+        self.tone_prompt_editor.setTextContainerInset_((10, 8))
+        self.tone_prompt_editor.setAccessibilityLabel_("所选话术的全局提示词")
+        self.tone_prompt_editor.setToolTip_("直接喂给生成模型的指令：写清「什么语气 + 别变成什么」，至少 10 字，不含 |。")
+        self.tone_prompt_editor.setDelegate_(self)
+        scroll.setDocumentView_(self.tone_prompt_editor)
+        panel.addSubview_(scroll)
+
+        self.label(panel, "提示词全局生效，至少 10 字且不含 | 字符；修改后点击「保存配置」立即生效（对应 JEV_TONES）。",
+                   18, 8, 650, 18, 10, PALETTE["muted"])
+
+        self.tone_env_locked = userconfig.source_of(styles.CUSTOM_VAR) == "环境变量"
+        self.tone_prompt_initial = dict(styles.PRESETS)
+        self.tone_prompt_drafts = dict(styles.PRESETS)
+        self.tone_prompt_selected = ""
+        self._refresh_tone_pickers(selected=current_defaults[0] if current_defaults[0] in self.tone_prompt_drafts else None,
+                                   default_slots=current_defaults)
+        if self.tone_env_locked:
+            self.tone_prompt_editor.setEditable_(False)
+            self.tone_prompt_editor.setToolTip_("由启动环境变量 JEV_TONES 控制；修改环境变量后重启。")
+            self.tone_reset_btn.setEnabled_(False)
+            self.tone_add_btn.setEnabled_(False)
+        item.setView_(panel)
+        self.tabs.addTabViewItem_(item)
+
+    @objc.python_method
+    def _sync_tone_prompt_draft(self):
+        name = getattr(self, "tone_prompt_selected", "")
+        if name and name in self.tone_prompt_drafts and self.tone_prompt_editor.isEditable():
+            self.tone_prompt_drafts[name] = str(self.tone_prompt_editor.string())
+
+    @objc.python_method
+    def _refresh_tone_pickers(self, selected=None, default_slots=None):
+        names = list(self.tone_prompt_drafts.keys())
+        current_defaults = (list(default_slots) if default_slots is not None
+                            else [str(p.titleOfSelectedItem() or styles.NONE_LABEL) for p in self.default_tone_pickers])
+        slot_items = names + [styles.NONE_LABEL]
+        for slot, pop in enumerate(self.default_tone_pickers):
+            pop.removeAllItems()
+            pop.addItemsWithTitles_(slot_items)
+            wanted = current_defaults[slot] if slot < len(current_defaults) else styles.NONE_LABEL
+            pop.selectItemWithTitle_(wanted if wanted in slot_items else styles.NONE_LABEL)
+
+        target = selected if selected in names else (names[0] if names else "")
+        self.tone_prompt_selected = ""
+        self.tone_prompt_picker.removeAllItems()
+        self.tone_prompt_picker.addItemsWithTitles_(names or ["暂无话术"])
+        if target in names:
+            self.tone_prompt_picker.selectItemWithTitle_(target)
+        self.tone_prompt_selected = target
+        self.tone_prompt_editor.setString_(self.tone_prompt_drafts.get(target, ""))
+        self._update_tone_badge()
+
+    @objc.python_method
+    def _update_tone_badge(self):
+        name = getattr(self, "tone_prompt_selected", "")
+        if not name or name not in self.tone_prompt_drafts:
+            self.tone_prompt_badge.setStringValue_("")
+            self.tone_reset_btn.setEnabled_(False)
+            return
+        if name in styles.BUILTIN:
+            modified = styles.normalize_prompt(self.tone_prompt_drafts[name]) != styles.BUILTIN[name]
+            self.tone_prompt_badge.setStringValue_("内置 · 已修改" if modified else "内置默认")
+            self.tone_prompt_badge.setTextColor_(PALETTE["amber"] if modified else PALETTE["muted"])
+            self.tone_reset_btn.setTitle_("恢复默认")
+            self.tone_reset_btn.setEnabled_(modified and not self.tone_env_locked and not self.busy)
+        else:
+            self.tone_prompt_badge.setStringValue_("自定义话术")
+            self.tone_prompt_badge.setTextColor_(PALETTE["green"])
+            self.tone_reset_btn.setTitle_("删除话术")
+            self.tone_reset_btn.setEnabled_(not self.tone_env_locked and not self.busy)
+
+    @objc.python_method
+    def changed_tone_prompts(self) -> bool:
+        if not hasattr(self, "tone_prompt_drafts") or getattr(self, "tone_env_locked", False):
+            return False
+        self._sync_tone_prompt_draft()
+        cur = {k: styles.normalize_prompt(v) for k, v in self.tone_prompt_drafts.items()}
+        init = {k: styles.normalize_prompt(v) for k, v in self.tone_prompt_initial.items()}
+        return cur != init
+
+    def defaultToneChanged_(self, sender):
+        self.set_status("全局默认话术已修改，点击「保存配置」后立即生效。")
+
+    def selectTonePrompt_(self, sender):
+        self._sync_tone_prompt_draft()
+        name = str(sender.titleOfSelectedItem())
+        self.tone_prompt_selected = name if name in self.tone_prompt_drafts else ""
+        self.tone_prompt_editor.setString_(self.tone_prompt_drafts.get(self.tone_prompt_selected, ""))
+        self._update_tone_badge()
+
+    def tonePromptEdited_(self, sender):
+        self._sync_tone_prompt_draft()
+        self._update_tone_badge()
+        self.set_status("话术提示词已修改，点击「保存配置」后立即生效。")
+
+    def resetTonePrompt_(self, sender):
+        name = getattr(self, "tone_prompt_selected", "")
+        if not name or self.tone_env_locked:
+            return
+        if name in styles.BUILTIN:
+            self.tone_prompt_drafts[name] = styles.BUILTIN[name]
+            self.tone_prompt_editor.setString_(styles.BUILTIN[name])
+            self._update_tone_badge()
+            self.set_status(f"「{name}」已恢复内置提示词，点击「保存配置」后生效。")
+            return
+        self.tone_prompt_drafts.pop(name, None)
+        self._refresh_tone_pickers()
+        self.set_status(f"已移除自定义话术「{name}」，点击「保存配置」后生效。")
+
+    def addCustomTone_(self, sender):
+        if self.tone_env_locked:
+            return
+        self._sync_tone_prompt_draft()
+        alert = A.NSAlert.alloc().init()
+        alert.setMessageText_("新增自定义话术")
+        alert.setInformativeText_("输入话术名称（不含 | 或 =，不能叫「不用」），创建后请在下方填写至少 10 字的提示词。")
+        name_field = A.NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 260, 26))
+        name_field.setPlaceholderString_("例如：摸鱼大师")
+        alert.setAccessoryView_(name_field)
+        alert.addButtonWithTitle_("创建")
+        alert.addButtonWithTitle_("取消")
+        if alert.runModal() != A.NSAlertFirstButtonReturn:
+            return
+        name = str(name_field.stringValue()).strip()
+        if not name or name == styles.NONE_LABEL or any(ch in name for ch in ("|", "=", "\r", "\n", "\0")):
+            self.set_status("话术名称无效：不能为空，不能叫「不用」，也不能含 | 或 =。", "error")
+            return
+        if name in self.tone_prompt_drafts:
+            self._refresh_tone_pickers(selected=name)
+            self.set_status(f"话术「{name}」已存在，已切换到该话术进行编辑。")
+            return
+        self.tone_prompt_drafts[name] = ""
+        self._refresh_tone_pickers(selected=name)
+        self.window.makeFirstResponder_(self.tone_prompt_editor)
+        self.set_status(f"已新建话术「{name}」，请填写至少 {styles.MIN_TONE_DESC_CHARS} 字提示词后点击「保存配置」。")
 
     @objc.python_method
     def build_apps_tab(self):
@@ -331,6 +525,8 @@ class SettingsController(NSObject):
         self.history_menu.setEnabled_(store is not None and not store.error)
         self.history_menu.itemAtIndex_(1).setEnabled_(bool(titles))
         self.history_menu.itemAtIndex_(2).setEnabled_(store is not None)
+        if self.history_menu.numberOfItems() > 3:
+            self.history_menu.itemAtIndex_(3).setEnabled_(bool(titles))
         error = store.error if store is not None else ""
         if error:
             self.set_status(error, "error")
@@ -362,6 +558,9 @@ class SettingsController(NSObject):
         self.set_status("候选数量已修改，点击「保存配置」后重启生效。")
 
     def textDidChange_(self, notification):
+        if notification is not None and notification.object() == getattr(self, "tone_prompt_editor", None):
+            self.tonePromptEdited_(None)
+            return
         self.contextControlChanged_(None)
 
     def clearCurrentHistory_(self, sender):
@@ -369,6 +568,17 @@ class SettingsController(NSObject):
 
     def clearAllHistory_(self, sender):
         self.context_action("all")
+
+    def resetCurrentChatTones_(self, sender):
+        if not self.hud or not self.context_title:
+            return
+        try:
+            self.hud.reset_chat_tones(self.context_title)
+        except (OSError, ValueError):
+            self.set_status((self.hud.conversations.error if self.hud.conversations else "")
+                            or "恢复失败，请检查本地数据权限及可用磁盘空间。", "error")
+            return
+        self.set_status(f"「{self.context_title}」已恢复跟随全局默认话术。", "success")
 
     @objc.python_method
     def context_action(self, action):
@@ -544,11 +754,23 @@ class SettingsController(NSObject):
             values["JEV_CONTEXT_MESSAGES"] = str(self.context_count.stringValue()).strip()
         if self.candidate_count.isEnabled():
             values["JEV_CANDIDATES_PER_TONE"] = str(self.candidate_count.titleOfSelectedItem())
+        if hasattr(self, "default_tone_pickers") and any(p.isEnabled() for p in self.default_tone_pickers):
+            picked_defaults = [str(p.titleOfSelectedItem() or styles.NONE_LABEL) for p in self.default_tone_pickers]
+            values[styles.DEFAULT_SLOTS_VAR] = styles.format_default_slots(picked_defaults)
         if hasattr(self, "app_switches") and any(btn.isEnabled() for btn in self.app_switches.values()):
             picked = [key for key, btn in self.app_switches.items()
                       if btn.state() == A.NSControlStateValueOn]
             values[registry.ENABLED_APPS_VAR] = registry.format_enabled_apps(picked)
-        return {k: v for k, v in values.items() if v != self.initial[k]}
+        diff = {k: v for k, v in values.items() if v != self.initial[k]}
+        if self.changed_tone_prompts():
+            entries = []
+            for name, raw_desc in self.tone_prompt_drafts.items():
+                desc = styles.normalize_prompt(raw_desc)
+                if name in styles.BUILTIN and desc == styles.BUILTIN[name]:
+                    continue
+                entries.append(f"{name}={desc}")
+            diff[styles.CUSTOM_VAR] = "|".join(entries)
+        return diff
 
     def controlTextDidChange_(self, notification):
         field = notification.object()
@@ -593,14 +815,27 @@ class SettingsController(NSObject):
         except OSError:
             self.set_status("保存失败：请检查文件权限及可用磁盘空间。", "error")
             return
-        self.initial.update(changes)
+        self.initial.update({k: v for k, v in changes.items() if k in self.initial})
         self.file_values.update(changes)
         context_changes = {k: v for k, v in changes.items() if k in ("JEV_HISTORY", "JEV_CONTEXT_MESSAGES")}
+        tone_changes = {k: v for k, v in changes.items() if k in (styles.DEFAULT_SLOTS_VAR, styles.CUSTOM_VAR)}
         app_change = changes.get("JEV_ENABLED_APPS")
         for key, value in context_changes.items():
             userconfig.session_override(key, value)
+        for key, value in tone_changes.items():
+            userconfig.session_override(key, value)
         if app_change is not None:
             userconfig.session_override("JEV_ENABLED_APPS", app_change)
+        if tone_changes:
+            styles.reload()
+            self.tone_prompt_initial = dict(styles.PRESETS)
+            self.tone_prompt_drafts = dict(styles.PRESETS)
+            self.initial[styles.DEFAULT_SLOTS_VAR] = styles.format_default_slots(styles.default_slots())
+            self._refresh_tone_pickers(
+                selected=getattr(self, "tone_prompt_selected", None),
+                default_slots=styles.default_slots())
+            if self.hud and hasattr(self.hud, "configure_tones"):
+                self.hud.configure_tones()
         if context_changes and self.hud:
             try:
                 effective_count = message_limit(userconfig.get("JEV_CONTEXT_MESSAGES") or "20")
@@ -620,12 +855,14 @@ class SettingsController(NSObject):
                             + ((self.hud.conversations.error if self.hud.conversations else "")
                                or "请检查本地数据权限或磁盘空间后重试。") + "背景草稿仍保留。", "error")
             return
-        live_keys = set(context_changes) | ({"JEV_ENABLED_APPS"} if app_change is not None else set())
+        live_keys = (set(context_changes)
+                     | set(tone_changes)
+                     | ({"JEV_ENABLED_APPS"} if app_change is not None else set()))
         model_changes = changes.keys() - live_keys
         if model_changes and not (live_keys or backgrounds):
             self.set_status("已保存。请退出并重新打开应用；当前会话继续使用启动时的配置。", "success")
         else:
-            self.set_status("会话与软件设置已保存并立即生效。" + ("模型配置需退出并重新打开应用。" if model_changes else ""), "success")
+            self.set_status("话术、会话与软件设置已保存并立即生效。" + ("模型配置需退出并重新打开应用。" if model_changes else ""), "success")
 
     def fetchModels_(self, sender):
         self.start_request(sender.tag(), True)
@@ -684,6 +921,11 @@ class SettingsController(NSObject):
         self.busy = False
         for control in self.controls:
             control.setEnabled_(True)
+        if hasattr(self, "tone_env_locked") and self.tone_env_locked:
+            self.tone_reset_btn.setEnabled_(False)
+            self.tone_add_btn.setEnabled_(False)
+        elif hasattr(self, "_update_tone_badge"):
+            self._update_tone_badge()
         if result.get("error"):
             self.set_status(result["error"] + (" 模型仍可手填。" if result["listing"] else ""), "error")
         elif result["listing"]:

@@ -178,6 +178,8 @@ class Conversations:
             if not isinstance(data, dict) or any(
                 not isinstance(title, str) or not title.strip() or not isinstance(chat, dict)
                 or not isinstance(chat.get('background', ''), str)
+                or ('tones' in chat and (not isinstance(chat['tones'], list)
+                    or not all(isinstance(t, str) for t in chat['tones'])))
                 or not isinstance(chat.get('messages', []), list)
                 or not isinstance(chat.get('breaks', []), list)
                 or any(type(i) is not int or not 0 < i < len(chat.get('messages', []))
@@ -277,6 +279,30 @@ class Conversations:
         title = self.resolve_title(title)
         chat = dict(self.data.get(title, {}), background=text)
         self._save(dict(self.data, **{title: chat}))
+
+    def tones(self, title):
+        """Return this chat's remembered candidate tone slots, or None to use global defaults."""
+        if not title or not title.strip():
+            return None
+        self.reload()
+        saved = self.data.get(self.resolve_title(title), {}).get('tones')
+        return list(saved) if isinstance(saved, list) and saved else None
+
+    def save_tones(self, title, tones):
+        """Remember per-chat candidate tone slots (or pass None to fall back to global defaults)."""
+        if not title or not title.strip():
+            raise ValueError('尚未确认聊天标题')
+        self.reload()
+        key = self.resolve_title(title)
+        chat = dict(self.data.get(key, {}))
+        if tones is None:
+            chat.pop('tones', None)
+        else:
+            if not isinstance(tones, (list, tuple)) or not all(isinstance(t, str) for t in tones):
+                raise ValueError('会话话术格式无效')
+            chat['tones'] = [str(t) for t in tones]
+        self._save(dict(self.data, **{key: chat}))
+        return list(chat['tones']) if 'tones' in chat else None
 
     def history(self, title):
         self.reload()

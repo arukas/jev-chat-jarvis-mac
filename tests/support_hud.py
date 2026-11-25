@@ -34,7 +34,8 @@ def hud_harness():
              '_regen_work', '_regenerate_work', 'regenerateReply_', '_rank_payload', '_payload_from_gen',
              'fillCandidate_', '_warm', '_warm_apps', 'configure_enabled_apps',
              'toggleAlwaysOnTop_', 'tick_',
-             '_chat_is_ignored', 'applyChatState_'}
+             '_chat_is_ignored', 'applyChatState_',
+             '_tones_for_chat', 'configure_tones', 'reset_chat_tones', 'applySlotTones_', 'toneChanged_'}
     methods = [n for n in source.body if isinstance(n, ast.FunctionDef) and n.name in names]
     for method in methods:
         method.decorator_list = []

@@ -1017,6 +1017,65 @@ class HudReplyTests(unittest.TestCase):
         self.h.applyReplyUpdate_((old_epoch, 'applyError:', 'late result'))
         self.h.applyError_.assert_not_called()
 
+    def test_per_chat_tone_memory_and_global_defaults(self):
+        styles = HUD['styles']
+        with tempfile.TemporaryDirectory() as directory:
+            store = chat_context.Conversations(Path(directory) / 'chats.json')
+            self.h.conversations = store
+            self.h._chat_title = ''
+            self.h._dds = []
+            self.h._regenerate = Mock()
+
+            # 1. 新会话使用全局默认话术
+            with patch.object(styles.userconfig, 'get',
+                              side_effect=lambda k: '稳如老狗,夸夸,不用' if k == styles.DEFAULT_SLOTS_VAR else ''):
+                self.read([block('你好', .40, .60, .15)], title='张三')
+                self.flush()
+                self.assertEqual(self.h.slot_tones, ['稳如老狗', '夸夸', '不用'])
+
+                # 2. 在张三的聊天里切换话术 -> 自动按张三单独记忆
+                fake_dds = [Mock(titleOfSelectedItem=Mock(return_value=t))
+                            for t in ('狗头军师', '狗头军师·会撩', '不用')]
+                self.h._dds = fake_dds
+                self.h._chat_title = '张三'
+                self.h.toneChanged_(None)
+                self.assertEqual(store.tones('张三'), ['狗头军师', '狗头军师·会撩', '不用'])
+                # 清空历史不丢话术记忆
+                store.clear_history('张三')
+                self.assertEqual(store.tones('张三'), ['狗头军师', '狗头军师·会撩', '不用'])
+
+                # 3. 切到没有记忆的新会话李四 -> 回到全局默认
+                self.h._dds = []
+                self.read([block('开会吗', .40, .60, .15)], title='李四')
+                self.flush()
+                self.assertEqual(self.h.slot_tones, ['稳如老狗', '夸夸', '不用'])
+
+                # 4. 切回张三 -> 恢复张三记忆的话术（且预生成直接拿到张三的话术）
+                self.read([block('晚上吃啥', .40, .60, .15)], title='张三')
+                self.flush()
+                self.assertEqual(self.h.slot_tones, ['狗头军师', '狗头军师·会撩', '不用'])
+                self.assertEqual(self.h._pregen_req[2], ('狗头军师', '狗头军师·会撩', '不用'))
+
+                # 5. 重置张三的话术记忆 -> 恢复跟随全局默认
+                self.h.reset_chat_tones('张三')
+                self.flush()
+                self.assertIsNone(store.tones('张三'))
+                self.assertEqual(self.h.slot_tones, ['稳如老狗', '夸夸', '不用'])
+
+            # 6. 全局默认变化时：未单独记忆的会话立即跟随，已有记忆的会话保持独立
+            store.save_tones('王五', ['理科直男', '不用', '不用'])
+            with patch.object(styles.userconfig, 'get',
+                              side_effect=lambda k: '高情商话术,职场黑话,不用' if k == styles.DEFAULT_SLOTS_VAR else ''):
+                self.h._chat_title = '李四'
+                self.h.configure_tones()
+                self.flush()
+                self.assertEqual(self.h.slot_tones, ['高情商话术', '职场黑话', '不用'])
+
+                self.h._chat_title = '王五'
+                self.h.configure_tones()
+                self.flush()
+                self.assertEqual(self.h.slot_tones, ['理科直男', '不用', '不用'])
+
 
 if __name__ == '__main__':
     unittest.main()

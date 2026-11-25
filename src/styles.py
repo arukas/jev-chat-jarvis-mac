@@ -134,7 +134,8 @@ BUILTIN: dict[str, str] = {
 DEFAULT_SLOTS: list[str] = ["高情商话术", "贴吧老哥 v1.0", "阴阳怪气"]
 NONE_LABEL = "不用"          # the third dropdown's way of saying "only two candidates"
 
-CUSTOM_VAR = "JEV_TONES"     # env var holding user-defined tones
+CUSTOM_VAR = "JEV_TONES"             # env var holding user-defined / overridden tone prompts
+DEFAULT_SLOTS_VAR = "JEV_DEFAULT_TONES"  # env var holding global default slot selections
 
 # Custom tones under this many characters are refused, not loaded. A two-word
 # instruction ("夸我") gives the model nothing to hold on to — the candidates come back
@@ -143,6 +144,79 @@ CUSTOM_VAR = "JEV_TONES"     # env var holding user-defined tones
 # in REJECTED_TONES so the startup log can point at the fix.
 MIN_TONE_DESC_CHARS = 10
 REJECTED_TONES: list[str] = []
+
+
+def normalize_prompt(text: str) -> str:
+    """Collapse newlines into spaces so prompts stay valid single-line env values."""
+    return re.sub(r"\s*[\r\n]+\s*", " ", str(text or "")).strip()
+
+
+def parse_custom_tones(raw: str | None, *, strict: bool = False) -> tuple[dict[str, str], list[str]]:
+    """Parse `名字=说明|...` custom/overridden tone entries."""
+    text = (raw or "").strip()
+    out: dict[str, str] = {}
+    rejected: list[str] = []
+    if not text:
+        return out, rejected
+    for part in text.split("|"):
+        name, sep, desc = part.partition("=")
+        name, desc = name.strip(), desc.strip()
+        if not sep:
+            if strict:
+                raise ValueError("自定义话术格式需为「名字=提示词」，多条用 | 分隔。")
+            continue
+        if not name or name == NONE_LABEL:
+            if strict:
+                raise ValueError(f"话术名称不能为空，也不能命名为「{NONE_LABEL}」。")
+            continue
+        if any(ch in name for ch in ("|", "=", "\r", "\n", "\0")):
+            if strict:
+                raise ValueError(f"话术名称「{name}」不能包含 |、= 或换行符。")
+            continue
+        if any(ch in desc for ch in ("|", "\r", "\n", "\0")):
+            if strict:
+                raise ValueError(f"话术「{name}」的提示词不能包含 | 或换行符。")
+            continue
+        if len(desc) < MIN_TONE_DESC_CHARS:
+            reason = (
+                f"「{name}」说明仅 {len(desc)} 字（至少 {MIN_TONE_DESC_CHARS} 字，"
+                "写清「什么语气 + 别变成什么」）"
+            )
+            if strict:
+                raise ValueError(reason)
+            rejected.append(reason)
+            continue
+        out[name] = desc
+    return out, rejected
+
+
+def serialize_custom_tones(prompts: dict[str, str], *, omit_builtin_defaults: bool = True) -> str:
+    """Serialize edited/custom tone prompts back into JEV_TONES format."""
+    entries: list[str] = []
+    for raw_name, raw_desc in prompts.items():
+        name = str(raw_name).strip()
+        desc = normalize_prompt(raw_desc)
+        if not name or name == NONE_LABEL:
+            raise ValueError(f"话术名称不能为空，也不能命名为「{NONE_LABEL}」。")
+        if any(ch in name for ch in ("|", "=", "\r", "\n", "\0")):
+            raise ValueError(f"话术名称「{name}」不能包含 |、= 或换行符。")
+        if "|" in desc or "\0" in desc:
+            raise ValueError(f"话术「{name}」的提示词不能包含 | 字符。")
+        if len(desc) < MIN_TONE_DESC_CHARS:
+            raise ValueError(
+                f"「{name}」提示词仅 {len(desc)} 字（至少 {MIN_TONE_DESC_CHARS} 字，"
+                "写清「什么语气 + 别变成什么」）"
+            )
+        if omit_builtin_defaults and name in BUILTIN and desc == BUILTIN[name]:
+            continue
+        entries.append(f"{name}={desc}")
+    return "|".join(entries)
+
+
+def validate_custom_tones(raw: str) -> str:
+    """Validate a JEV_TONES string before writing it to the env file."""
+    parsed, _ = parse_custom_tones(raw, strict=True)
+    return serialize_custom_tones(parsed, omit_builtin_defaults=False)
 
 
 def _custom_tones() -> dict[str, str]:
@@ -156,23 +230,81 @@ def _custom_tones() -> dict[str, str]:
     slot impossible to switch off. Descriptions shorter than MIN_TONE_DESC_CHARS are
     refused and recorded in REJECTED_TONES (see that constant).
     """
-    raw = userconfig.get(CUSTOM_VAR)
-    out: dict[str, str] = {}
-    for part in (raw or "").split("|"):
-        name, sep, desc = part.partition("=")
-        name, desc = name.strip(), desc.strip()
-        if sep and name and name != NONE_LABEL:
-            if len(desc) < MIN_TONE_DESC_CHARS:
-                REJECTED_TONES.append(
-                    f"「{name}」说明仅 {len(desc)} 字（至少 {MIN_TONE_DESC_CHARS} 字，"
-                    "写清「什么语气 + 别变成什么」）")
-                continue
-            out[name] = desc
+    out, rejected = parse_custom_tones(userconfig.get(CUSTOM_VAR), strict=False)
+    REJECTED_TONES.extend(rejected)
     return out
 
 
 CUSTOM: dict[str, str] = _custom_tones()
 PRESETS: dict[str, str] = {**BUILTIN, **CUSTOM}
+
+
+def _pad_slots(slots: list[str]) -> list[str]:
+    padded = list(slots[:MAX_SLOTS])
+    while len(padded) < MAX_SLOTS:
+        padded.append(NONE_LABEL)
+    return padded
+
+
+def _split_slot_text(text: str) -> list[str]:
+    sep = "|" if "|" in text else ","
+    return [part.strip() for part in text.split(sep)]
+
+
+def format_default_slots(slots: list[str] | tuple[str, ...]) -> str:
+    """Serialize MAX_SLOTS default tones into JEV_DEFAULT_TONES format."""
+    padded = [str(s).strip() or NONE_LABEL for s in _pad_slots(list(slots))]
+    sep = "|" if any("," in item for item in padded) else ","
+    return sep.join(padded)
+
+
+def parse_default_slots(raw: str | None, presets: dict[str, str] | None = None) -> list[str]:
+    """Parse JEV_DEFAULT_TONES with safe fallback to DEFAULT_SLOTS."""
+    pool = PRESETS if presets is None else presets
+    fallback = _pad_slots(DEFAULT_SLOTS)
+    text = (raw or "").strip()
+    if not text:
+        return fallback
+    parts = _split_slot_text(text)[:MAX_SLOTS]
+    resolved = [p if p in pool else NONE_LABEL for p in parts]
+    resolved = _pad_slots(resolved)
+    return resolved if any(p in pool for p in resolved) else fallback
+
+
+def validate_default_slots(raw: str, presets: dict[str, str] | None = None) -> str:
+    """Validate JEV_DEFAULT_TONES before writing it to the env file."""
+    pool = PRESETS if presets is None else presets
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    parts = _split_slot_text(text)
+    if len(parts) > MAX_SLOTS:
+        raise ValueError(f"默认话术最多配置 {MAX_SLOTS} 个槽位。")
+    invalid = [p for p in parts if not p or (p != NONE_LABEL and p not in pool)]
+    if invalid:
+        raise ValueError(f"未知的默认话术：{', '.join(p or '（空）' for p in invalid)}")
+    padded = _pad_slots(parts)
+    if not any(p in pool for p in padded):
+        raise ValueError("全局默认话术至少需要启用 1 个有效话术，不能全部设为「不用」。")
+    return format_default_slots(padded)
+
+
+def default_slots(presets: dict[str, str] | None = None) -> list[str]:
+    """Effective global default slots from JEV_DEFAULT_TONES (or built-in defaults)."""
+    return parse_default_slots(userconfig.get(DEFAULT_SLOTS_VAR), presets=presets)
+
+
+def resolve_slot_tones(saved: list[str] | tuple[str, ...] | None,
+                       presets: dict[str, str] | None = None) -> list[str]:
+    """Resolve a chat's remembered slots against active presets, falling back safely."""
+    pool = PRESETS if presets is None else presets
+    if not saved:
+        return default_slots(presets=pool)
+    resolved = _pad_slots([t if t in pool else NONE_LABEL for t in saved])
+    if any(t in pool for t in resolved):
+        return resolved
+    return default_slots(presets=pool)
+
 
 def _label_alternation() -> str:
     """The labels as one regex alternative, with spaces and 「·」 made optional.
@@ -188,8 +320,25 @@ def _label_alternation() -> str:
     return "|".join(escaped)
 
 
-_LABEL_RE = re.compile(
-    rf"^[*_#\s]*(?:{_label_alternation()})[^，。！？；、,.!?;：:]{{0,4}}[*_#\s]*[:：]\s*")
+def _compile_label_re() -> re.Pattern[str]:
+    return re.compile(
+        rf"^[*_#\s]*(?:{_label_alternation()})[^，。！？；、,.!?;：:]{{0,4}}[*_#\s]*[:：]\s*")
+
+
+_LABEL_RE = _compile_label_re()
+
+
+def reload() -> None:
+    """Reload custom/overridden tones in place so live settings saves apply immediately."""
+    global _LABEL_RE
+    REJECTED_TONES.clear()
+    fresh_custom = _custom_tones()
+    CUSTOM.clear()
+    CUSTOM.update(fresh_custom)
+    PRESETS.clear()
+    PRESETS.update(BUILTIN)
+    PRESETS.update(CUSTOM)
+    _LABEL_RE = _compile_label_re()
 
 
 def labels() -> list[str]:

@@ -598,7 +598,7 @@ class Generator:
         completes — streaming's early look, before the full result is in. Callers that do
         not pass it get exactly the old collect-then-return behaviour.
         """
-        slots = list(slot_tones or (styles.DEFAULT_SLOTS + [styles.NONE_LABEL]))
+        slots = list(slot_tones or styles.default_slots())
         active = [(i, t) for i, t in enumerate(slots) if t in styles.PRESETS]
         if not active:
             return {"groups": [], "error": "没有选择任何话术", "elapsed_s": 0.0}

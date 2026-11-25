@@ -44,6 +44,12 @@ class CaptureAppTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
+    def setUp(self):
+        import userconfig
+        patcher = patch.object(userconfig, 'get', return_value='')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_wechat_by_bundle_id(self):
         from apps import registry
         with patch.object(registry, '_frontmost', return_value=('com.tencent.xinWeChat', 'Some Name')):
