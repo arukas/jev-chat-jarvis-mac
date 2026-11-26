@@ -10,6 +10,7 @@ import objc
 from Foundation import NSObject, NSMakeRect
 
 import builtin
+from generate import EXTRA_BODY_PRESETS, default_extra_params, resolve_extra_params
 import judge
 import styles
 import userconfig
@@ -33,7 +34,7 @@ class SettingsController(NSObject):
         self.controls = []
         self.busy = False
         self.window = A.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 760, 648),
+            NSMakeRect(0, 0, 760, 700),
             A.NSWindowStyleMaskTitled | A.NSWindowStyleMaskClosable,
             A.NSBackingStoreBuffered, False)
         self.window.setAppearance_(A.NSAppearance.appearanceNamed_(A.NSAppearanceNameAqua))
@@ -45,7 +46,7 @@ class SettingsController(NSObject):
         self.window.setLevel_(A.NSFloatingWindowLevel + 1)
         self.window.setReleasedWhenClosed_(False)
         self.window.setDelegate_(self)
-        view = A.NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 760, 648))
+        view = A.NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 760, 700))
         view.setMaterial_(getattr(
             A, "NSVisualEffectMaterialSidebar",
             getattr(A, "NSVisualEffectMaterialLight", 1)))
@@ -55,41 +56,41 @@ class SettingsController(NSObject):
         view.layer().setBackgroundColor_(PALETTE["bg"].CGColor())
         self.window.setContentView_(view)
 
-        title = self.label(view, "模型与会话设置", 24, 598, 710, 28, 22)
+        title = self.label(view, "模型与会话设置", 24, 650, 710, 28, 22)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(22))
         title.setTextColor_(PALETTE["text"])
         self.label(view, "编辑文件：" + str(self.path).replace(str(Path.home()), "~"),
-                   24, 570, 710, 20, 11, PALETTE["muted"])
+                   24, 622, 710, 20, 11, PALETTE["muted"])
 
         restart_box = ui_style.make_surface(
             10, PALETTE["amber"].colorWithAlphaComponent_(0.10),
             PALETTE["amber"].colorWithAlphaComponent_(0.18))
-        restart_box.setFrame_(NSMakeRect(24, 530, 710, 34))
+        restart_box.setFrame_(NSMakeRect(24, 582, 710, 34))
         view.addSubview_(restart_box)
         restart_notice = self.label(view, "模型配置保存后重启 · 话术、会话与软件开关保存后立即生效",
-                                    38, 536, 680, 20, 13, PALETTE["amber"])
+                                    38, 588, 680, 20, 13, PALETTE["amber"])
         restart_notice.setFont_(A.NSFont.boldSystemFontOfSize_(13))
 
         tab_surface = ui_style.make_surface(14, PALETTE["surface"], PALETTE["edge"])
-        tab_surface.setFrame_(NSMakeRect(16, 176, 728, 342))
+        tab_surface.setFrame_(NSMakeRect(16, 176, 728, 394))
         view.addSubview_(tab_surface)
-        self.tabs = A.NSTabView.alloc().initWithFrame_(NSMakeRect(24, 184, 712, 326))
+        self.tabs = A.NSTabView.alloc().initWithFrame_(NSMakeRect(24, 184, 712, 378))
         if hasattr(self.tabs, "setDrawsBackground_"):
             self.tabs.setDrawsBackground_(False)
         titles = ("判断 · Jev", "生成 · OpenAI 兼容", "生成 · Anthropic 兼容")
         for index, (prefix, title) in enumerate(zip(config.PREFIXES, titles)):
             item = A.NSTabViewItem.alloc().initWithIdentifier_(prefix)
             item.setLabel_(title)
-            panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+            panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 352))
             summary, source = self.current_source(prefix)
             source_surface = ui_style.make_surface(10, PALETTE["row"], PALETTE["edge"])
-            source_surface.setFrame_(NSMakeRect(12, 212, 666, 76))
+            source_surface.setFrame_(NSMakeRect(12, 264, 666, 76))
             panel.addSubview_(source_surface)
-            badge = self.label(panel, summary, 26, 254, 638, 20, 14, PALETTE["green"])
+            badge = self.label(panel, summary, 26, 306, 638, 20, 14, PALETTE["green"])
             badge.setFont_(A.NSFont.boldSystemFontOfSize_(14))
-            self.label(panel, source, 26, 220, 638, 34, 11, PALETTE["muted"])
+            self.label(panel, source, 26, 272, 638, 34, 11, PALETTE["muted"])
             fields = {}
-            for name, label, y in (("API_KEY", "密钥", 166), ("BASE_URL", "服务地址", 120), ("MODEL", "模型", 74)):
+            for name, label, y in (("API_KEY", "密钥", 218), ("BASE_URL", "服务地址", 172), ("MODEL", "模型", 126)):
                 row_label = self.label(panel, label, 26, y + 3, 78, 24, 11, PALETTE["text"])
                 row_label.setFont_(A.NSFont.boldSystemFontOfSize_(11))
                 cls = A.NSSecureTextField if name == "API_KEY" else A.NSComboBox if name == "MODEL" else A.NSTextField
@@ -117,9 +118,45 @@ class SettingsController(NSObject):
                 self.controls.append(field)
             self.fields[prefix] = fields
             if prefix == "OPENAI":
-                self.label(panel, "每种话术候选数", 26, 43, 138, 20, 11, PALETTE["text"])
+                extra_label = self.label(panel, "思考参数", 26, 83, 78, 24, 11, PALETTE["text"])
+                extra_label.setFont_(A.NSFont.boldSystemFontOfSize_(11))
+                self.openai_thinking_preset = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(
+                    NSMakeRect(112, 81, 186, 28), False)
+                self.openai_thinking_preset.setFont_(A.NSFont.systemFontOfSize_(12))
+                self.openai_thinking_preset.addItemsWithTitles_(
+                    [label for label, _ in EXTRA_BODY_PRESETS] + ["自定义 JSON"])
+                self.openai_thinking_preset.setTarget_(self)
+                self.openai_thinking_preset.setAction_("thinkingPresetChanged:")
+                self.openai_thinking_preset.setAccessibilityLabel_("OpenAI 思考参数预设")
+                self.openai_thinking_preset.setToolTip_(
+                    "选择常见服务的关思考参数，或选「自动适配」按地址/模型自动选择（如 DeepSeek 自动发 thinking=disabled）。")
+                panel.addSubview_(self.openai_thinking_preset)
+                self.openai_extra_body = A.NSTextField.alloc().initWithFrame_(NSMakeRect(306, 80, 358, 30))
+                self.style_field(self.openai_extra_body)
+                self.openai_extra_body.setDelegate_(self)
+                self.openai_extra_body.setPlaceholderString_("留空自动适配（DeepSeek 自动关思考）")
+                self.openai_extra_body.setAccessibilityLabel_("OpenAI 思考参数 JSON")
+                self.openai_extra_body.setToolTip_(
+                    "对应 OPENAI_EXTRA_BODY（JSON 对象）；测试连接立即使用当前值，保存后重启生效。")
+                self.openai_extra_env_locked = userconfig.source_of("OPENAI_EXTRA_BODY") == "环境变量"
+                extra_initial = values.get("OPENAI_EXTRA_BODY", "").strip()
+                extra_display = (userconfig.get("OPENAI_EXTRA_BODY").strip()
+                                 if self.openai_extra_env_locked else extra_initial)
+                self.openai_extra_body.setStringValue_(extra_display)
+                self._sync_thinking_preset(extra_display)
+                if self.openai_extra_env_locked:
+                    lock_tip = "由启动环境变量 OPENAI_EXTRA_BODY 控制；修改环境变量后重启。"
+                    self.openai_thinking_preset.setEnabled_(False)
+                    self.openai_thinking_preset.setToolTip_(lock_tip)
+                    self.openai_extra_body.setEnabled_(False)
+                    self.openai_extra_body.setToolTip_(lock_tip)
+                panel.addSubview_(self.openai_extra_body)
+                self.initial["OPENAI_EXTRA_BODY"] = extra_initial
+                self.controls.extend((self.openai_thinking_preset, self.openai_extra_body))
+
+                self.label(panel, "每种话术候选数", 26, 45, 138, 20, 11, PALETTE["text"])
                 self.candidate_count = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(
-                    NSMakeRect(170, 39, 78, 28), False)
+                    NSMakeRect(170, 41, 78, 28), False)
                 self.candidate_count.addItemsWithTitles_([
                     str(value) for value in range(styles.MIN_PER_TONE, styles.MAX_PER_TONE + 1)])
                 self.candidate_count.selectItemWithTitle_(str(styles.PER_TONE))
@@ -128,15 +165,15 @@ class SettingsController(NSObject):
                 self.candidate_count.setTarget_(self)
                 self.candidate_count.setAction_("candidateCountChanged:")
                 panel.addSubview_(self.candidate_count)
-                self.label(panel, "条（保存后重启生效）", 258, 43, 170, 20, 11, PALETTE["muted"])
+                self.label(panel, "条（保存后重启生效）", 258, 45, 170, 20, 11, PALETTE["muted"])
                 self.initial["JEV_CANDIDATES_PER_TONE"] = str(styles.PER_TONE)
                 if userconfig.source_of("JEV_CANDIDATES_PER_TONE") == "环境变量":
                     self.candidate_count.setEnabled_(False)
                     self.candidate_count.setToolTip_("由启动环境变量控制；修改环境变量后重启。")
             else:
                 hint = ("Jev 地址带不带 /v1 都行，网关动作不同时可填完整动作路径；列表接口不可用时可手填模型。" if prefix == "TYPESAFE"
-                        else "使用 Anthropic 消息接口，支持自定义兼容服务地址。")
-                self.label(panel, hint, 26, 43, 638, 20, 11, PALETTE["muted"])
+                        else "使用 Anthropic 消息接口，支持自定义兼容服务地址（DeepSeek 自动关思考）。")
+                self.label(panel, hint, 26, 86, 638, 20, 11, PALETTE["muted"])
             for text, action, x in (("获取模型列表", "fetchModels:", 372), ("测试连接", "testConnection:", 524)):
                 button = self.button(panel, text, action, x, 4, 140)
                 button.setTag_(index)
@@ -177,14 +214,14 @@ class SettingsController(NSObject):
         import chat_context
         item = A.NSTabViewItem.alloc().initWithIdentifier_("CONTEXT")
         item.setLabel_("会话记录与背景")
-        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 352))
         group = ui_style.make_surface(10, PALETTE["row"], PALETTE["edge"])
-        group.setFrame_(NSMakeRect(12, 168, 666, 120))
+        group.setFrame_(NSMakeRect(12, 220, 666, 120))
         panel.addSubview_(group)
-        title = self.label(panel, "记录聊天历史", 26, 254, 490, 20, 13)
+        title = self.label(panel, "记录聊天历史", 26, 306, 490, 20, 13)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
-        self.label(panel, "每个会话保留最近 100 条，关闭后保留已有记录", 26, 235, 530, 18, 11, PALETTE["muted"])
-        self.history_switch = A.NSSwitch.alloc().initWithFrame_(NSMakeRect(610, 242, 46, 28))
+        self.label(panel, "每个会话保留最近 100 条，关闭后保留已有记录", 26, 287, 530, 18, 11, PALETTE["muted"])
+        self.history_switch = A.NSSwitch.alloc().initWithFrame_(NSMakeRect(610, 294, 46, 28))
         self.history_switch.setAccessibilityLabel_("记录聊天历史")
         self.history_switch.setTarget_(self)
         self.history_switch.setAction_("contextControlChanged:")
@@ -192,12 +229,12 @@ class SettingsController(NSObject):
         self.history_switch.setState_(A.NSOnState if enabled else A.NSOffState)
         panel.addSubview_(self.history_switch)
         divider = ui_style.make_surface(0, PALETTE["edge"])
-        divider.setFrame_(NSMakeRect(26, 228, 638, 1))
+        divider.setFrame_(NSMakeRect(26, 280, 638, 1))
         panel.addSubview_(divider)
-        title = self.label(panel, "模型参考条数", 26, 204, 490, 20, 13)
+        title = self.label(panel, "模型参考条数", 26, 256, 490, 20, 13)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
-        self.label(panel, "使用最近的消息，包含当前消息（1—100 条）", 26, 185, 530, 18, 11, PALETTE["muted"])
-        self.context_count = A.NSTextField.alloc().initWithFrame_(NSMakeRect(580, 194, 56, 28))
+        self.label(panel, "使用最近的消息，包含当前消息（1—100 条）", 26, 237, 530, 18, 11, PALETTE["muted"])
+        self.context_count = A.NSTextField.alloc().initWithFrame_(NSMakeRect(580, 246, 56, 28))
         try:
             count = self.hud.context_limit if self.hud else chat_context.message_limit(
                 userconfig.get("JEV_CONTEXT_MESSAGES") or "20")
@@ -209,22 +246,22 @@ class SettingsController(NSObject):
         self.context_count.setDelegate_(self)
         self.context_count.setAccessibilityLabel_("模型参考条数，1 到 100")
         panel.addSubview_(self.context_count)
-        self.label(panel, "条", 642, 197, 22, 20, 11, PALETTE["muted"])
+        self.label(panel, "条", 642, 249, 22, 20, 11, PALETTE["muted"])
         self.initial.update({"JEV_HISTORY": "1" if enabled else "0", "JEV_CONTEXT_MESSAGES": str(count)})
         for key, control in (("JEV_HISTORY", self.history_switch),
                              ("JEV_CONTEXT_MESSAGES", self.context_count)):
             if userconfig.source_of(key) == "环境变量":
                 control.setEnabled_(False)
                 control.setToolTip_("由启动环境变量控制；修改环境变量后重启。")
-        title = self.label(panel, "聊天背景", 18, 138, 300, 22, 13)
+        title = self.label(panel, "聊天背景", 18, 190, 300, 22, 13)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
-        self.context_picker = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(428, 136, 244, 28), False)
+        self.context_picker = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(428, 188, 244, 28), False)
         self.context_picker.setFont_(A.NSFont.systemFontOfSize_(12))
         self.context_picker.setAccessibilityLabel_("选择要编辑背景的会话")
         self.context_picker.setTarget_(self)
         self.context_picker.setAction_("selectContext:")
         panel.addSubview_(self.context_picker)
-        scroll = A.NSScrollView.alloc().initWithFrame_(NSMakeRect(18, 34, 650, 94))
+        scroll = A.NSScrollView.alloc().initWithFrame_(NSMakeRect(18, 34, 650, 146))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(A.NSNoBorder)
         scroll.setWantsLayer_(True)
@@ -232,7 +269,7 @@ class SettingsController(NSObject):
         scroll.layer().setBorderColor_(PALETTE["edge"].CGColor())
         scroll.layer().setBorderWidth_(0.75)
         scroll.layer().setMasksToBounds_(True)
-        self.background_editor = A.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 630, 94))
+        self.background_editor = A.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 630, 146))
         self.background_editor.setRichText_(False)
         self.background_editor.setFont_(A.NSFont.systemFontOfSize_(12))
         self.background_editor.setTextColor_(PALETTE["text"])
@@ -264,22 +301,22 @@ class SettingsController(NSObject):
     def build_tones_tab(self):
         item = A.NSTabViewItem.alloc().initWithIdentifier_("TONES")
         item.setLabel_("候选话术")
-        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 352))
 
         group = ui_style.make_surface(10, PALETTE["row"], PALETTE["edge"])
-        group.setFrame_(NSMakeRect(12, 194, 666, 94))
+        group.setFrame_(NSMakeRect(12, 246, 666, 94))
         panel.addSubview_(group)
-        title = self.label(panel, "全局默认候选回复类型", 26, 260, 490, 20, 13)
+        title = self.label(panel, "全局默认候选回复类型", 26, 312, 490, 20, 13)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
         self.label(panel, "新会话默认使用以下槽位；在悬浮窗切换话术会自动按每个聊天单独记忆（对应 JEV_DEFAULT_TONES）。",
-                   26, 240, 638, 18, 11, PALETTE["muted"])
+                   26, 292, 638, 18, 11, PALETTE["muted"])
         default_env_locked = userconfig.source_of(styles.DEFAULT_SLOTS_VAR) == "环境变量"
         current_defaults = styles.default_slots()
         self.default_tone_pickers = []
         for slot in range(styles.MAX_SLOTS):
             x = 26 + slot * 218
-            self.label(panel, f"槽位 {slot + 1}", x, 208, 42, 20, 11, PALETTE["muted"])
-            pop = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(x + 42, 203, 162, 28), False)
+            self.label(panel, f"槽位 {slot + 1}", x, 260, 42, 20, 11, PALETTE["muted"])
+            pop = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(x + 42, 255, 162, 28), False)
             pop.setFont_(A.NSFont.systemFontOfSize_(12))
             pop.setTarget_(self)
             pop.setAction_("defaultToneChanged:")
@@ -291,20 +328,20 @@ class SettingsController(NSObject):
             self.default_tone_pickers.append(pop)
         self.initial[styles.DEFAULT_SLOTS_VAR] = styles.format_default_slots(current_defaults)
 
-        title = self.label(panel, "话术提示词（全局）", 18, 158, 132, 22, 13)
+        title = self.label(panel, "话术提示词（全局）", 18, 210, 132, 22, 13)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
-        self.tone_prompt_picker = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(150, 155, 190, 28), False)
+        self.tone_prompt_picker = A.NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(150, 207, 190, 28), False)
         self.tone_prompt_picker.setFont_(A.NSFont.systemFontOfSize_(12))
         self.tone_prompt_picker.setAccessibilityLabel_("选择要编辑提示词的话术")
         self.tone_prompt_picker.setTarget_(self)
         self.tone_prompt_picker.setAction_("selectTonePrompt:")
         panel.addSubview_(self.tone_prompt_picker)
-        self.tone_prompt_badge = self.label(panel, "", 348, 160, 128, 18, 11, PALETTE["muted"])
-        self.tone_reset_btn = self.button(panel, "恢复默认", "resetTonePrompt:", 482, 153, 88)
-        self.tone_add_btn = self.button(panel, "新增话术…", "addCustomTone:", 578, 153, 90)
+        self.tone_prompt_badge = self.label(panel, "", 348, 212, 128, 18, 11, PALETTE["muted"])
+        self.tone_reset_btn = self.button(panel, "恢复默认", "resetTonePrompt:", 482, 205, 88)
+        self.tone_add_btn = self.button(panel, "新增话术…", "addCustomTone:", 578, 205, 90)
         self.controls.extend((self.tone_reset_btn, self.tone_add_btn))
 
-        scroll = A.NSScrollView.alloc().initWithFrame_(NSMakeRect(18, 34, 650, 110))
+        scroll = A.NSScrollView.alloc().initWithFrame_(NSMakeRect(18, 34, 650, 162))
         scroll.setHasVerticalScroller_(True)
         scroll.setBorderType_(A.NSNoBorder)
         scroll.setWantsLayer_(True)
@@ -312,7 +349,7 @@ class SettingsController(NSObject):
         scroll.layer().setBorderColor_(PALETTE["edge"].CGColor())
         scroll.layer().setBorderWidth_(0.75)
         scroll.layer().setMasksToBounds_(True)
-        self.tone_prompt_editor = A.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 630, 110))
+        self.tone_prompt_editor = A.NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 630, 162))
         self.tone_prompt_editor.setRichText_(False)
         self.tone_prompt_editor.setFont_(A.NSFont.systemFontOfSize_(12))
         self.tone_prompt_editor.setTextColor_(PALETTE["text"])
@@ -458,21 +495,21 @@ class SettingsController(NSObject):
         from apps import registry
         item = A.NSTabViewItem.alloc().initWithIdentifier_("APPS")
         item.setLabel_("启用软件")
-        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 300))
+        panel = A.NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 690, 352))
         group = ui_style.make_surface(10, PALETTE["row"], PALETTE["edge"])
-        group.setFrame_(NSMakeRect(12, 92, 666, 196))
+        group.setFrame_(NSMakeRect(12, 144, 666, 196))
         panel.addSubview_(group)
-        title = self.label(panel, "全局启用哪些聊天软件", 26, 256, 490, 20, 13)
+        title = self.label(panel, "全局启用哪些聊天软件", 26, 308, 490, 20, 13)
         title.setFont_(A.NSFont.boldSystemFontOfSize_(13))
         self.label(panel, "未勾选的软件在前台时不会读屏、不弹出悬浮窗，也不预热其读屏引擎（对应 JEV_ENABLED_APPS）。",
-                   26, 234, 638, 18, 11, PALETTE["muted"])
+                   26, 286, 638, 18, 11, PALETTE["muted"])
         divider = ui_style.make_surface(0, PALETTE["edge"])
-        divider.setFrame_(NSMakeRect(26, 224, 638, 1))
+        divider.setFrame_(NSMakeRect(26, 276, 638, 1))
         panel.addSubview_(divider)
         enabled = set(registry.enabled_app_keys())
         env_locked = userconfig.source_of(registry.ENABLED_APPS_VAR) == "环境变量"
         self.app_switches: dict[str, object] = {}
-        y = 182
+        y = 234
         for app in registry.APPS:
             btn = A.NSButton.alloc().initWithFrame_(NSMakeRect(26, y, 240, 22))
             btn.setButtonType_(A.NSButtonTypeSwitch)
@@ -494,7 +531,7 @@ class SettingsController(NSObject):
             y -= 52
         self.initial[registry.ENABLED_APPS_VAR] = registry.format_enabled_apps(enabled)
         self.label(panel, "保存后立即生效，无需重启应用；全部取消勾选将全局暂停对所有聊天软件的自动响应。",
-                   18, 56, 650, 24, 11, PALETTE["muted"])
+                   18, 108, 650, 24, 11, PALETTE["muted"])
         item.setView_(panel)
         self.tabs.addTabViewItem_(item)
 
@@ -741,6 +778,44 @@ class SettingsController(NSObject):
         A.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
     @objc.python_method
+    def _sync_thinking_preset(self, raw: str):
+        text = (raw or "").strip()
+        if not text:
+            self.openai_thinking_preset.selectItemWithTitle_(EXTRA_BODY_PRESETS[0][0])
+            return
+        parsed = None
+        try:
+            candidate = json.loads(text)
+            if isinstance(candidate, dict):
+                parsed = candidate
+        except ValueError:
+            parsed = None
+        for title, preset_raw in EXTRA_BODY_PRESETS[1:]:
+            if text == preset_raw:
+                self.openai_thinking_preset.selectItemWithTitle_(title)
+                return
+            if parsed is not None:
+                try:
+                    if parsed == json.loads(preset_raw):
+                        self.openai_thinking_preset.selectItemWithTitle_(title)
+                        return
+                except ValueError:
+                    pass
+        self.openai_thinking_preset.selectItemWithTitle_("自定义 JSON")
+
+    def thinkingPresetChanged_(self, sender):
+        if getattr(self, "openai_extra_env_locked", False):
+            return
+        title = str(sender.titleOfSelectedItem() or "")
+        preset_map = dict(EXTRA_BODY_PRESETS)
+        if title in preset_map:
+            self.openai_extra_body.setStringValue_(preset_map[title])
+            self.set_status("配置已修改，请重新测试；保存后重启生效。")
+        else:
+            self.window.makeFirstResponder_(self.openai_extra_body)
+            self.set_status('请输入合法 JSON 对象（如 {"thinking": {"type": "disabled"}}），留空自动适配。')
+
+    @objc.python_method
     def values(self, prefix):
         return {k: str(v.stringValue()) for k, v in self.fields[prefix].items()}
 
@@ -748,6 +823,8 @@ class SettingsController(NSObject):
     def changed(self):
         from apps import registry
         values = {f"{p}_{k}": v for p in config.PREFIXES for k, v in self.values(p).items()}
+        if hasattr(self, "openai_extra_body") and self.openai_extra_body.isEnabled():
+            values["OPENAI_EXTRA_BODY"] = str(self.openai_extra_body.stringValue()).strip()
         if self.history_switch.isEnabled():
             values["JEV_HISTORY"] = "1" if self.history_switch.state() == A.NSOnState else "0"
         if self.context_count.isEnabled():
@@ -777,6 +854,10 @@ class SettingsController(NSObject):
         if field == self.context_count:
             self.contextControlChanged_(field)
             return
+        if hasattr(self, "openai_extra_body") and field == self.openai_extra_body:
+            self._sync_thinking_preset(str(field.stringValue()))
+            self.set_status("配置已修改，请重新测试；保存后重启生效。")
+            return
         for fields in self.fields.values():
             if field in (fields["API_KEY"], fields["BASE_URL"]):
                 combo = fields["MODEL"]
@@ -795,12 +876,14 @@ class SettingsController(NSObject):
             return
         # Persist missing displayed defaults for edited services, but keep untouched key lines.
         for prefix in config.PREFIXES:
-            if any(k.startswith(prefix + "_") for k in changes):
+            provider_keys = {f"{prefix}_{f}" for f in config.FIELDS}
+            if any(k in provider_keys for k in changes):
                 changes.update({f"{prefix}_{k}": v for k, v in self.values(prefix).items()
                                 if k != "API_KEY" and f"{prefix}_{k}" not in self.file_values})
         try:
             for prefix in config.PREFIXES:
-                if any(k.startswith(prefix + "_") for k in changes):
+                provider_keys = {f"{prefix}_{f}" for f in config.FIELDS}
+                if any(k in provider_keys for k in changes):
                     vals = self.values(prefix)
                     if vals["API_KEY"] and (not vals["BASE_URL"].strip() or not vals["MODEL"].strip()):
                         raise ValueError("填写密钥后，请同时填写该服务的地址和模型。")
@@ -885,14 +968,11 @@ class SettingsController(NSObject):
                 raise ValueError("请填写模型后再测试。")
             extra = None
             if not listing and prefix == "OPENAI":
-                # Match generation's current extra-body setting, without changing it.
-                raw = userconfig.get("OPENAI_EXTRA_BODY") or builtin.EXTRA_BODY
-                extra = json.loads(raw) if raw else {}
-                if not isinstance(extra, dict):
-                    raise ValueError("OPENAI_EXTRA_BODY 必须是 JSON 对象。")
-        except json.JSONDecodeError:
-            self.set_status("OPENAI_EXTRA_BODY 不是有效 JSON，请先修正该配置。", "error")
-            return
+                # Test with the unsaved thinking/extra-body setting (or auto-adapt to the form's endpoint/model).
+                raw = str(self.openai_extra_body.stringValue()).strip()
+                extra = resolve_extra_params(raw, values["BASE_URL"], values["MODEL"], api="openai", strict=True)
+            elif not listing and prefix == "ANTHROPIC":
+                extra = default_extra_params(values["BASE_URL"], values["MODEL"], api="anthropic")
         except ValueError as e:
             self.set_status(str(e), "error")
             return
@@ -921,6 +1001,9 @@ class SettingsController(NSObject):
         self.busy = False
         for control in self.controls:
             control.setEnabled_(True)
+        if getattr(self, "openai_extra_env_locked", False):
+            self.openai_thinking_preset.setEnabled_(False)
+            self.openai_extra_body.setEnabled_(False)
         if hasattr(self, "tone_env_locked") and self.tone_env_locked:
             self.tone_reset_btn.setEnabled_(False)
             self.tone_add_btn.setEnabled_(False)

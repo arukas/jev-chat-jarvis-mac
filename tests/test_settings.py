@@ -102,6 +102,59 @@ class SettingsFiles(unittest.TestCase):
                 config.write_settings(path, text, {'JEV_TONES': '摸鱼大师=太短'})
             self.assertEqual(path.read_text(), text)
 
+    def test_write_settings_persists_and_validates_extra_body(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'env'
+            ds = '{"thinking": {"type": "disabled"}}'
+            text = config.write_settings(path, '', {'OPENAI_EXTRA_BODY': f'  {ds}  '})
+            self.assertEqual(userconfig.parse_env_file(path)['OPENAI_EXTRA_BODY'], ds)
+            text = config.write_settings(path, text, {'OPENAI_EXTRA_BODY': '{}'})
+            self.assertEqual(userconfig.parse_env_file(path)['OPENAI_EXTRA_BODY'], '{}')
+            text = config.write_settings(path, text, {'OPENAI_EXTRA_BODY': ''})
+            self.assertEqual(userconfig.parse_env_file(path)['OPENAI_EXTRA_BODY'], '')
+            for bad in ('{bad', '[]', '123', '"str"'):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    config.write_settings(path, text, {'OPENAI_EXTRA_BODY': bad})
+            self.assertEqual(path.read_text(), text)
+
+    def test_extra_body_auto_adaptation_and_explicit_override(self):
+        import generate
+        # Built-in relay keeps its own enable_thinking=false
+        self.assertEqual(
+            generate.resolve_extra_params('', 'http://101.132.131.220:11111/v1', 'glm-4-flash', generate.BUILTIN_SOURCE),
+            {'enable_thinking': False})
+        # DeepSeek official and relayed deepseek-flash default to thinking.type=disabled (never enable_thinking)
+        for base, model, api in (
+            ('https://api.deepseek.com', 'deepseek-flash', 'openai'),
+            ('https://api.deepseek.com/v1', 'deepseek-v4-flash', 'openai'),
+            ('https://api.deepseek.com/anthropic', 'deepseek-flash', 'anthropic'),
+            ('https://relay.example.invalid/v1', 'deepseek/deepseek-flash', 'openai'),
+        ):
+            with self.subTest(base=base, model=model, api=api):
+                params = generate.resolve_extra_params('', base, model, 'env', api)
+                self.assertEqual(params, {'thinking': {'type': 'disabled'}})
+                self.assertNotIn('enable_thinking', params)
+        # Qwen3 / DashScope / SiliconFlow keep enable_thinking=false
+        self.assertEqual(
+            generate.resolve_extra_params('', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'env'),
+            {'enable_thinking': False})
+        self.assertEqual(
+            generate.resolve_extra_params('', 'https://relay.example.invalid/v1', 'Qwen/Qwen3-8B', 'env'),
+            {'enable_thinking': False})
+        # Generic OpenAI / GPT-5.3 endpoints must NOT receive leaked enable_thinking=false
+        self.assertEqual(
+            generate.resolve_extra_params('', 'https://api.openai.com/v1', 'gpt-5.3', 'env'),
+            {})
+        # Explicit {} disables auto-adaptation; explicit JSON wins
+        self.assertEqual(
+            generate.resolve_extra_params('{}', 'https://api.deepseek.com', 'deepseek-flash', 'env'),
+            {})
+        self.assertEqual(
+            generate.resolve_extra_params('{"reasoning_effort": "none"}', 'https://api.deepseek.com', 'deepseek-flash', 'env'),
+            {'reasoning_effort': 'none'})
+        with self.assertRaises(ValueError):
+            generate.resolve_extra_params('{invalid', 'https://api.deepseek.com', 'deepseek-flash', strict=True)
+
 
 class Server(BaseHTTPRequestHandler):
     requests = []
@@ -176,8 +229,9 @@ class SettingsNetwork(unittest.TestCase):
 
     def test_anthropic_and_jev_real_response_shape(self):
         Server.response = {'content': [{'type': 'text', 'text': '连接成功'}]}
-        config.test_connection('ANTHROPIC', self.base, 'key', 'model')
+        config.test_connection('ANTHROPIC', self.base, 'key', 'deepseek-flash', {'thinking': {'type': 'disabled'}})
         self.assertEqual(Server.requests[-1][0], '/v1/messages')
+        self.assertEqual(Server.requests[-1][2]['thinking'], {'type': 'disabled'})
         Server.response = {'answers': {'test': {'choice': '问候'}}}
         config.test_connection('TYPESAFE', self.base, 'key', 'model')
         self.assertEqual(Server.requests[-1][0], '/v1/systemone')
@@ -189,7 +243,7 @@ class SettingsNetwork(unittest.TestCase):
                 config.test_connection('OPENAI', self.base, 'key', 'model')
 
     def test_no_redirect_or_fallback_and_no_secret_in_error(self):
-        for status in (302, 401, 403, 500):
+        for status in (302, 400, 401, 403, 500):
             Server.code = status
             Server.response = {'error': 'SECRET'}
             with self.assertRaises(Exception) as caught:
@@ -197,7 +251,9 @@ class SettingsNetwork(unittest.TestCase):
             msg = config.error_message(caught.exception)
             self.assertIn(str(status), msg)
             self.assertNotIn('SECRET', msg)
-        self.assertEqual(len(Server.requests), 4)
+            if status == 400:
+                self.assertIn('思考参数', msg)
+        self.assertEqual(len(Server.requests), 5)
 
     def test_network_errors_are_classified_by_layer(self):
         # #116: DNS/拒绝/超时/TLS 此前全折叠成一句「连接失败或超时」，用户无从定位。

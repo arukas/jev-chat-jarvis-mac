@@ -344,23 +344,91 @@ def load_credentials() -> tuple[str, str, str, str, str]:
     return base, "", model, "none", pick_api_format(base, None)
 
 
-def _extra_params() -> dict:
-    """Extra request-body fields from OPENAI_EXTRA_BODY (a JSON object).
+EXTRA_BODY_PRESETS: tuple[tuple[str, str], ...] = (
+    ("自动适配（推荐）", ""),
+    ("DeepSeek 关思考", '{"thinking": {"type": "disabled"}}'),
+    ("Qwen / 兼容关思考", '{"enable_thinking": false}'),
+    ("OpenAI 关思考", '{"reasoning_effort": "none"}'),
+    ("不发送额外参数", "{}"),
+)
+
+
+def default_extra_params(base_url: str = "", model: str = "",
+                         source: str = "", api: str = "openai") -> dict:
+    """Provider/model-aware default extra body when OPENAI_EXTRA_BODY is unset.
+
+    The built-in relay needs `{"enable_thinking": false}` (for Qwen3/glm-4-flash), but
+    sending that field blindly to other providers breaks or gets ignored — e.g. DeepSeek
+    (`deepseek-flash` / `deepseek-v4-*`) enables thinking by default and expects
+    `{"thinking": {"type": "disabled"}}`, while OpenAI rejects unknown fields.
+    """
+    if source == BUILTIN_SOURCE:
+        if api == "openai" and builtin.EXTRA_BODY:
+            try:
+                parsed = json.loads(builtin.EXTRA_BODY)
+                return parsed if isinstance(parsed, dict) else {}
+            except ValueError:
+                return {}
+        return {}
+    host = (urllib.parse.urlsplit(base_url.strip()).hostname or "").lower()
+    model_name = model.strip().lower().rsplit("/", 1)[-1]
+    if host == "deepseek.com" or host.endswith(".deepseek.com"):
+        return {"thinking": {"type": "disabled"}}
+    if api == "openai" and (
+        host == "dashscope.aliyuncs.com" or host.endswith(".dashscope.aliyuncs.com")
+        or host in ("siliconflow.cn", "siliconflow.com")
+        or host.endswith(".siliconflow.cn") or host.endswith(".siliconflow.com")
+    ):
+        return {"enable_thinking": False}
+    if model_name.startswith("deepseek"):
+        return {"thinking": {"type": "disabled"}}
+    if api == "openai" and model_name.startswith("qwen3"):
+        return {"enable_thinking": False}
+    return {}
+
+
+def parse_extra_body(raw: str) -> dict | None:
+    """Parse a JSON-object string for OPENAI_EXTRA_BODY. Empty string returns None (auto)."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        extra = json.loads(text)
+    except ValueError as e:
+        raise ValueError('思考参数必须是合法 JSON 对象（如 {"thinking": {"type": "disabled"}}），或留空自动适配。') from e
+    if not isinstance(extra, dict):
+        raise ValueError('思考参数必须是合法 JSON 对象（如 {"thinking": {"type": "disabled"}}），或留空自动适配。')
+    return extra
+
+
+def resolve_extra_params(raw: str | None, base_url: str = "", model: str = "",
+                         source: str = "", api: str = "openai",
+                         strict: bool = False) -> dict:
+    """Resolve effective extra request-body fields. Explicit JSON (including `{}`) wins."""
+    text = (raw or "").strip()
+    if text:
+        try:
+            parsed = parse_extra_body(text)
+        except ValueError:
+            if strict:
+                raise
+            return {}
+        return parsed if parsed is not None else {}
+    return default_extra_params(base_url, model, source, api)
+
+
+def _extra_params(base_url: str = "", model: str = "",
+                  source: str = "", api: str = "openai") -> dict:
+    """Extra request-body fields from OPENAI_EXTRA_BODY, or provider/model-aware defaults.
 
     Some endpoints need a switch the OpenAI shape has no field for: an unswitched Qwen3
-    spends its whole reply budget reasoning (85s per call vs 2s on the same relay). Field
-    names are provider-specific, so this passes through whatever is configured rather than
-    naming one option. Malformed JSON is ignored — this runs on every generation, and a
-    typo in an optional knob must not be able to take the candidates down.
+    spends its whole reply budget reasoning (85s per call vs 2s on the same relay), and
+    DeepSeek's `deepseek-flash` / `deepseek-v4-*` defaults to thinking on unless given
+    `{"thinking": {"type": "disabled"}}`. Malformed JSON is ignored at runtime — a typo
+    in an optional knob must not be able to take the candidates down.
     """
-    raw = userconfig.get("OPENAI_EXTRA_BODY") or builtin.EXTRA_BODY
-    if not raw:
-        return {}
-    try:
-        extra = json.loads(raw)
-    except ValueError:
-        return {}
-    return extra if isinstance(extra, dict) else {}
+    raw = userconfig.get("OPENAI_EXTRA_BODY") if api == "openai" else ""
+    return resolve_extra_params(raw, base_url, model, source, api, strict=False)
 
 
 def credential_status() -> str:
@@ -374,11 +442,13 @@ def credential_status() -> str:
                 f"   端点: {base}  ({shape})\n"
                 f"   模型: {model}\n"
                 f"   {MISSING_HINT}")
+    extra = _extra_params(base, model, source, api)
+    extra_line = f"\n   参数: {json.dumps(extra, ensure_ascii=False)}" if extra else ""
     return (f"✅ 凭据来源: {source.replace(home, '~')}\n"
             f"   端点: {base}\n"
             f"   接口: {shape}\n"
             f"   模型: {model}\n"
-            f"   Key : {key[:6]}…{key[-4:]}  ({len(key)} chars)")
+            f"   Key : {key[:6]}…{key[-4:]}  ({len(key)} chars){extra_line}")
 
 
 class Generator:
@@ -422,6 +492,7 @@ class Generator:
             url = _endpoint(base, "anthropic")
             body = {"model": model, "max_tokens": 300, "temperature": 0.9,
                     "messages": [{"role": "user", "content": prompt}]}
+            body.update(_extra_params(base, model, _src, "anthropic"))
             headers = {"content-type": "application/json", "x-api-key": key,
                        "anthropic-version": "2023-06-01"}
             data = self._post(url, headers, body)
@@ -439,7 +510,7 @@ class Generator:
         url = _endpoint(base, "openai")
         body = {"model": model, "max_tokens": 300, "temperature": 0.9,
                 "messages": [{"role": "user", "content": prompt}]}
-        body.update(_extra_params())
+        body.update(_extra_params(base, model, _src, "openai"))
         headers = {"content-type": "application/json", "authorization": f"Bearer {key}"}
         if on_delta is not None:
             return self._stream_openai(url, headers, body, model, alt, on_delta)

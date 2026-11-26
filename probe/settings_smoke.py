@@ -94,9 +94,14 @@ try:
         assert fields['MODEL'].objectValues() == ['served-model']
         assert fields['MODEL'].stringValue() == 'typed-model', 'must not silently switch model'
         Server.response = {'choices': [{'message': {'content': '连接成功'}}]}
+        c.openai_thinking_preset.selectItemWithTitle_('DeepSeek 关思考')
+        app.sendAction_to_from_(c.openai_thinking_preset.action(), c, c.openai_thinking_preset)
+        assert c.openai_extra_body.stringValue() == '{"thinking": {"type": "disabled"}}'
         request_button(c, 'OPENAI', '测试连接').performClick_(None)
         wait_for_request(c)
         assert '连接成功' in c.status.stringValue(), c.status.stringValue()
+        assert Server.requests[-1][2].get('thinking') == {'type': 'disabled'}
+        assert 'enable_thinking' not in Server.requests[-1][2]
         Server.code = 401
         request_button(c, 'OPENAI', '获取模型列表').performClick_(None)
         wait_for_request(c)
@@ -105,6 +110,7 @@ try:
         c.save_button.performClick_(None)
         assert '已保存' in c.status.stringValue(), c.status.stringValue()
         assert userconfig.parse_env_file(path)['OPENAI_MODEL'] == 'typed-model'
+        assert userconfig.parse_env_file(path)['OPENAI_EXTRA_BODY'] == '{"thinking": {"type": "disabled"}}'
         assert '# keep\nJEV_TONES="名字=说明"\n' in path.read_text()
         assert path.stat().st_mode & 0o777 == 0o600
         assert not userconfig.get('OPENAI_API_KEY'), 'must not hot reload'
@@ -251,6 +257,8 @@ try:
             restart_context.window.close()
         reopened = SettingsController.alloc().init().build()
         assert reopened.fields['OPENAI']['MODEL'].stringValue() == 'typed-model'
+        assert reopened.openai_extra_body.stringValue() == '{"thinking": {"type": "disabled"}}'
+        assert reopened.openai_thinking_preset.titleOfSelectedItem() == 'DeepSeek 关思考'
         # Existing keychain expression remains byte-for-byte when editing only the model.
         path.write_text('export OPENAI_API_KEY="$(security find-generic-password -w)" # keep expression\nOPENAI_MODEL=old\n')
         shell = SettingsController.alloc().init().build()

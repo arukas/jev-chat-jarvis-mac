@@ -15,7 +15,10 @@ import urllib.parse
 
 import userconfig
 from chat_context import message_limit
-from generate import _endpoint, base_is_verbatim_action, http_post_json, jev_request_url, Generator, ThinkingOnlyError
+from generate import (
+    _endpoint, base_is_verbatim_action, http_post_json, jev_request_url,
+    parse_extra_body, Generator, ThinkingOnlyError,
+)
 import styles
 
 PREFIXES = ("TYPESAFE", "OPENAI", "ANTHROPIC")
@@ -42,6 +45,7 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
     # JUDGE_BACKEND is the first-run dialog's choice (judge.download_block_reason);
     # the settings window's offline-model section writes it through the same guarded path.
     allowed = {f"{p}_{f}" for p in PREFIXES for f in FIELDS} | {
+        "OPENAI_EXTRA_BODY",
         "JUDGE_BACKEND", "JEV_HISTORY", "JEV_CONTEXT_MESSAGES",
         "JEV_MESSAGE_REGION", "JEV_INPUT_REGION", "JEV_CANDIDATES_PER_TONE",
         "JEV_ENABLED_APPS", "JEV_TONES", "JEV_DEFAULT_TONES"}
@@ -65,6 +69,8 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
     if "JEV_DEFAULT_TONES" in changes:
         changes["JEV_DEFAULT_TONES"] = styles.validate_default_slots(
             changes["JEV_DEFAULT_TONES"], presets=effective_presets)
+    if "OPENAI_EXTRA_BODY" in changes:
+        changes["OPENAI_EXTRA_BODY"] = validate_extra_body(changes["OPENAI_EXTRA_BODY"])
     if "JEV_ENABLED_APPS" in changes:
         from apps import registry
         changes["JEV_ENABLED_APPS"] = registry.validate_enabled_apps(changes["JEV_ENABLED_APPS"])
@@ -95,6 +101,13 @@ def write_settings(path: Path, original: str, changes: dict[str, str]) -> str:
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+    return text
+
+
+def validate_extra_body(raw: str) -> str:
+    text = (raw or "").strip()
+    if text:
+        parse_extra_body(text)
     return text
 
 
@@ -174,6 +187,8 @@ def test_connection(prefix: str, base: str, key: str, model: str, extra: dict | 
             "messages": [{"role": "user", "content": "请只回复：连接成功"}]}
     headers = {"content-type": "application/json"}
     if api == "anthropic":
+        body.update(extra or {})
+        body.update(model=model)
         headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
     else:
         body.update(extra or {})
@@ -197,6 +212,8 @@ def error_message(error: Exception) -> str:
     系统代理，浏览器可达 ≠ 应用可达）。文案只给类别与可行动提示，绝不回显 URL/密钥。
     """
     if isinstance(error, urllib.error.HTTPError):
+        if error.code == 400:
+            return "HTTP 400：请求参数不被该模型或接口支持，请检查「思考参数」或模型名称。"
         return f"HTTP {error.code}：请检查地址、密钥及模型权限。"
     if isinstance(error, ThinkingOnlyError):
         return "模型只返回了思考内容，没有正文；请关闭思考模式或更换模型。"

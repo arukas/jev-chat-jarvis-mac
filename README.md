@@ -123,7 +123,7 @@ uv run python probe/bootstrap_regression.py      # 两种启动入口的离线�
 - 环境变量优先于用户 env，用户 env 优先于项目 `.env`；生成层 OpenAI 组优先于 Anthropic 组，均未配置才使用内置共享密钥。清空当前文件的密钥不会禁用其他来源中的密钥。由终端或启动器导出的值也显示为「环境变量」。
 - API 格式由密钥组决定：`OPENAI_*` 使用 OpenAI 格式，`ANTHROPIC_*` 使用 Anthropic 格式；自定义地址不需要包含服务名称。Ollama 可填 `http://localhost:11434/v1`、密钥 `ollama`，模型从本地服务获取或手填。Jev 地址带不带末尾 `/v1` 都行，与手动配置共用同一条拼接规则。
 - 钥匙串：不新增钥匙串读写。如果原 env 用 `$(security find-generic-password …)` 等 shell 表达式提供密钥，窗口不执行表达式、不展示其内容，未输入新密钥时保留原行；仍由已有启动器执行。要在窗口测试该服务，需明确输入密钥；保存将用输入值替换原表达式。外部注入的密钥继续遵循环境变量优先级。
-- `JEV_BOXES`、`OPENAI_EXTRA_BODY` 暂仍通过 env 配置，保存窗口不会改动它们。OpenAI 连接测试沿用当前启动的 `OPENAI_EXTRA_BODY`。
+- `JEV_BOXES` 暂仍通过 env 配置，保存窗口不会改动它。「生成 · OpenAI 兼容」页内置「思考参数」（对应 `OPENAI_EXTRA_BODY`），默认「自动适配」按地址/模型自动选择兼容的关思考参数（如 DeepSeek 自动发 `{"thinking":{"type":"disabled"}}`，Qwen3/内置中转发 `{"enable_thinking":false}`，OpenAI 等不再误发 `enable_thinking`），也可手动选预设或自定义 JSON；「测试连接」会立即使用窗口中尚未保存的思考参数。
 - **候选话术与全局提示词**：设置窗口「候选话术」页可配置全局默认 3 个候选槽位（`JEV_DEFAULT_TONES`）、修改内置或新增自定义话术的全局提示词（`JEV_TONES`），支持恢复内置默认提示词与删除自定义话术，保存后立即生效。在悬浮窗切换话术会自动按每个聊天单独记忆（保存在 `conversations.json`），可在「会话记录与背景 → 管理记录 → 恢复所选会话默认话术」清除单聊记忆。
 - 生成设置里的「每种话术候选数」可选 1—5 条，默认 2 条；它作用于 OpenAI/Anthropic 两种生成格式，保存后重启生效，也可用 `JEV_CANDIDATES_PER_TONE` 配置。
 
@@ -138,18 +138,18 @@ export TYPESAFE_API_KEY=""
 # 生成层：任意 OpenAI 兼容端点
 export OPENAI_API_KEY="sk-你的key"
 export OPENAI_BASE_URL="https://api.deepseek.com"
-export OPENAI_MODEL="deepseek-chat"
-# 端点的思考模式要靠额外字段关时填（Qwen3 这类不关会慢几十倍）
-# export OPENAI_EXTRA_BODY='{"enable_thinking":false}'
+export OPENAI_MODEL="deepseek-flash"
+# 思考参数（留空自动适配：DeepSeek 自动发 {"thinking":{"type":"disabled"}}，Qwen3 自动发 {"enable_thinking":false}）
+# export OPENAI_EXTRA_BODY='{"thinking":{"type":"disabled"}}'
 ENV
 chmod 600 ~/.config/jev-jarvis/env
 ```
 
-- **凭据解析以 key 为准**：提供 key 的来源同时决定端点和模型。实测可用：DeepSeek `deepseek-chat`（最快）；智谱 `glm-4-flash`（换 `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`，两组都填 OpenAI 组优先）；本地 Ollama `qwen2.5:7b`（完全不出网）
+- **凭据解析以 key 为准**：提供 key 的来源同时决定端点和模型。实测可用：DeepSeek `deepseek-flash`（自动关思考）/ `deepseek-chat`；智谱 `glm-4-flash`（换 `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`，两组都填 OpenAI 组优先）；本地 Ollama `qwen2.5:7b`（完全不出网）
 - **判断层网关**：`TYPESAFE_BASE_URL` 三种填法等价可用——只到主机（`https://api.typesafe.ai`）、带版本段（`…/v1`，自动补动作段，不会出现 `/v1/v1/…`）、或填完整动作路径（填到动作段为止，原样使用、不再拼接）。第三方 TypeSafe 兼容网关填网关地址 + 网关 key，模型名按网关填写（如 Vercel AI Gateway 填 `https://ai-gateway.vercel.sh/v1/evaluate`、模型 `typesafe-ai/jev`；OpenRouter 填 `https://openrouter.ai/api/alpha/decisions`、模型 `typesafe/jev-1.13`，key 用 OpenRouter 的 `sk-or-…`，响应同为 systemone 形状）
 - **判断方式选择（`JUDGE_BACKEND`）**：首次启动（未配判断层 key 且离线模型未下载）会弹一次选择，结果写进 env：`cloud`=在线判断（不下载、不加载本地模型）、`local`=离线判断（预热时下载，选过就不再问）、`skip`=稍后再说（不再弹，消息时面板提示）。不写此键时：模型已在本地就照常使用，未下载则**不会自动下载**，面板提示引导。模型设置的「判断 · Jev」页可删除离线模型（显示实际占用）或启用离线判断
 - **国内网络加速**：模型已缓存后启动**完全不联网**（直接从本地快照加载，不查新版本）；首次下载时若 huggingface.co 不可达（探测 2.5 秒），自动改用镜像 `hf-mirror.com` 下载并在日志注明。也可在 env 里 `export HF_ENDPOINT="https://hf-mirror.com"` 显式指定任意兼容端点——显式配置优先，不再探测
-- **别用 thinking 模型**：思考吃光 `max_tokens`，候选 0 条，面板只报「候选生成失败」——DeepSeek 认准 `deepseek-chat`
+- **关闭思考模式**：默认开思考的模型（如 DeepSeek `deepseek-flash` / `deepseek-v4-*`、Qwen3）如果不关思考，思考内容会吃光 `max_tokens` 导致候选 0 条；请在「生成 · OpenAI 兼容」页将「思考参数」设为「自动适配（推荐）」或对应预设（DeepSeek 为 `{"thinking":{"type":"disabled"}}`）
 - **自定义话术与全局默认槽位**：可在设置窗口「候选话术」页直接编辑并立即生效，也可在 env 里配置 `JEV_DEFAULT_TONES`（逗号分隔 3 个槽位，停用填 `不用`）与 `JEV_TONES`（`|` 分隔、每条「名字=说明」，同名覆盖内置提示词），如 `摸鱼大师=像资深摸鱼选手，把活推得漂亮又不失礼`。**有质量门槛**：说明至少 10 字，写清「什么语气 + 别变成什么」；太短的（如「夸我」）不会加载，启动日志会写明原因——说明太空模型就没得发挥，候选只会平庸
 - 自查凭据（不打印完整 key）：`uv run python src/generate.py --check`、`uv run python src/judge_jev.py`
 
